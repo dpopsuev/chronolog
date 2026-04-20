@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/dpopsuev/chronolog/internal/domain"
@@ -97,6 +99,11 @@ type SQLiteStore struct {
 func OpenSQLite(path string, busyTimeoutMs int) (*SQLiteStore, error) {
 	if busyTimeoutMs <= 0 {
 		busyTimeoutMs = 5000
+	}
+	if dir := filepath.Dir(path); dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, fmt.Errorf("create db directory: %w", err)
+		}
 	}
 	dsn := fmt.Sprintf("%s?_pragma=journal_mode(wal)&_pragma=busy_timeout(%d)&_pragma=foreign_keys(on)&_pragma=cache_size(-64000)", path, busyTimeoutMs)
 	db, err := sql.Open("sqlite", dsn)

@@ -64,9 +64,23 @@ func load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
+// DefaultDataDir returns the XDG-compliant data directory.
+func DefaultDataDir() string {
+	if v := os.Getenv("XDG_DATA_HOME"); v != "" {
+		return filepath.Join(v, "chronolog")
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".local", "share", "chronolog")
+}
+
+// DefaultDBPath returns the default database path under XDG data dir.
+func DefaultDBPath() string {
+	return filepath.Join(DefaultDataDir(), "chronolog.db")
+}
+
 func applyDefaults(cfg *Config) {
 	if cfg.DB.Path == "" {
-		cfg.DB.Path = envOr("CHRONOLOG_DB", "chronolog.db")
+		cfg.DB.Path = envOr("CHRONOLOG_DB", DefaultDBPath())
 	}
 	if cfg.Transport == "" {
 		cfg.Transport = "stdio"
