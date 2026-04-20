@@ -1,0 +1,4 @@
+db:
+  path: ./chronolog.db
+log_level: info
+transport: stdio

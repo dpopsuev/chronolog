@@ -1,0 +1,5 @@
+chronolog
+*.db
+*.db-wal
+*.db-shm
+*.chronolog
