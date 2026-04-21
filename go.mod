@@ -3,7 +3,7 @@ module github.com/dpopsuev/chronolog
 go 1.25.8
 
 require (
-	github.com/dpopsuev/battery v0.9.0
+	github.com/dpopsuev/battery v0.11.0
 	github.com/google/uuid v1.6.0
 	github.com/modelcontextprotocol/go-sdk v1.5.0
 	github.com/spf13/cobra v1.10.2

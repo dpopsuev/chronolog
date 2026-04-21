@@ -20,6 +20,89 @@ import (
 	"github.com/google/uuid"
 )
 
+var chronologSchema = json.RawMessage(`{
+	"type": "object",
+	"properties": {
+		"action": {"type": "string", "enum": ["create_domain", "list_domains", "create_environment", "list_environments", "create_session", "list_sessions", "create_instance", "list_instances"], "description": "Cascade lifecycle action"},
+		"name": {"type": "string", "description": "Name for the new entity"},
+		"domain_id": {"type": "string", "description": "Parent domain UUID (for environment)"},
+		"environment_id": {"type": "string", "description": "Parent environment UUID (for session)"},
+		"session_id": {"type": "string", "description": "Parent session UUID (for instance)"},
+		"description": {"type": "string"},
+		"alias": {"type": "string", "description": "Mutable human-friendly alias"}
+	},
+	"required": ["action"]
+}`)
+
+var intakeSchema = json.RawMessage(`{
+	"type": "object",
+	"properties": {
+		"action": {"type": "string", "enum": ["add_source", "list_sources", "remove_source"], "description": "Intake action"},
+		"instance_id": {"type": "string", "description": "UUID of the target instance"},
+		"source": {"type": "string", "description": "Source label (e.g. filename or service name)"},
+		"lines": {"type": "array", "items": {"type": "string"}, "description": "Log lines to ingest. Caller must read the file and split into lines — intake does not read files."}
+	},
+	"required": ["action"]
+}`)
+
+var graphSchema = json.RawMessage(`{
+	"type": "object",
+	"properties": {
+		"action": {"type": "string", "enum": ["add_edge", "remove_edge", "merge", "collapse", "purge", "add_bookmark", "list_bookmarks", "add_highlight", "list_highlights", "register_service", "list_services", "register_codebase", "list_codebases"], "description": "Graph action"},
+		"instance_id": {"type": "string", "description": "Instance UUID (for merge/collapse/purge)"},
+		"from_id": {"type": "string", "description": "Source node UUID (for edges)"},
+		"relation": {"type": "string", "enum": ["contains", "precedes", "traces_to", "produced_by", "grouped_in"], "description": "Edge relation type"},
+		"to_id": {"type": "string", "description": "Target node UUID (for edges)"},
+		"event_id": {"type": "string", "description": "Event UUID (for bookmarks/highlights)"},
+		"label": {"type": "string"},
+		"note": {"type": "string"},
+		"substring": {"type": "string", "description": "Text to highlight in event"},
+		"name": {"type": "string", "description": "Service or codebase name"},
+		"description": {"type": "string"},
+		"repo_url": {"type": "string"},
+		"root_path": {"type": "string"}
+	},
+	"required": ["action"]
+}`)
+
+var querySchema = json.RawMessage(`{
+	"type": "object",
+	"properties": {
+		"action": {"type": "string", "enum": ["timeline", "search", "around", "correlations", "trace_to_code", "trace_from_code"], "description": "Query action"},
+		"instance_id": {"type": "string", "description": "Instance UUID (for timeline)"},
+		"event_id": {"type": "string", "description": "Event UUID (for around/correlations/trace)"},
+		"query": {"type": "string", "description": "FTS5 search query (for search)"},
+		"limit": {"type": "integer", "description": "Max results (default 100)"},
+		"window": {"type": "integer", "description": "Correlation window in seconds (default 5)"}
+	},
+	"required": ["action"]
+}`)
+
+var diffSchema = json.RawMessage(`{
+	"type": "object",
+	"properties": {
+		"action": {"type": "string", "enum": ["instance_diff", "session_diff", "environment_diff", "hot_cold_map"], "description": "Diff action"},
+		"instance_a": {"type": "string", "description": "First instance UUID"},
+		"instance_b": {"type": "string", "description": "Second instance UUID"},
+		"session_id": {"type": "string", "description": "Session UUID (for session_diff)"},
+		"environment_a": {"type": "string", "description": "First environment UUID"},
+		"environment_b": {"type": "string", "description": "Second environment UUID"},
+		"limit": {"type": "integer", "description": "Max events per instance (default 50)"}
+	},
+	"required": ["action"]
+}`)
+
+var projectionSchema = json.RawMessage(`{
+	"type": "object",
+	"properties": {
+		"action": {"type": "string", "enum": ["scalar", "vector", "heatmap", "cube", "export"], "description": "Projection action"},
+		"instance_id": {"type": "string", "description": "Instance UUID (for scalar/export)"},
+		"session_id": {"type": "string", "description": "Session UUID (for vector/heatmap/cube/export)"},
+		"filter": {"type": "string", "description": "Case-insensitive substring filter on event messages"}
+	},
+	"required": ["action"]
+}`)
+
 // Slog attribute key constants.
 const (
 	logKeySource     = "source"
@@ -66,8 +149,9 @@ func NewServer(s port.Store, version string) *batterymcp.Server {
 			"create_session (name, environment_id, alias), list_sessions (environment_id), " +
 			"create_instance (name, session_id, alias), list_instances (session_id). " +
 			"Always create top-down: domain first, then environment, session, instance.",
-		Keywords:   []string{"domain", "environment", "session", "instance", "cascade", "create", "list"},
-		Categories: []string{"lifecycle"},
+		Keywords:    []string{"domain", "environment", "session", "instance", "cascade", "create", "list"},
+		Categories:  []string{"lifecycle"},
+		InputSchema: chronologSchema,
 	}, h.handleChronolog)
 
 	bsrv.Tool(server.ToolMeta{
@@ -78,8 +162,9 @@ func NewServer(s port.Store, version string) *batterymcp.Server {
 			"list_sources (instance_id — shows source files and event counts), " +
 			"remove_source (instance_id, source — removes all events from a source and retracts edges). " +
 			"Idempotent: re-adding the same source+line produces no duplicates.",
-		Keywords:   []string{"source", "log", "add", "stage", "ingest", "lines", "remove"},
-		Categories: []string{"intake"},
+		Keywords:    []string{"source", "log", "add", "stage", "ingest", "lines", "remove"},
+		Categories:  []string{"intake"},
+		InputSchema: intakeSchema,
 	}, h.handleIntake)
 
 	bsrv.Tool(server.ToolMeta{
@@ -94,8 +179,9 @@ func NewServer(s port.Store, version string) *batterymcp.Server {
 			"register_service (name, description), list_services, " +
 			"register_codebase (name, repo_url, root_path), list_codebases. " +
 			"Relations: contains, precedes, traces_to, produced_by, grouped_in.",
-		Keywords:   []string{"edge", "merge", "annotate", "bookmark", "highlight", "relation", "collapse", "purge"},
-		Categories: []string{"graph"},
+		Keywords:    []string{"edge", "merge", "annotate", "bookmark", "highlight", "relation", "collapse", "purge"},
+		Categories:  []string{"graph"},
+		InputSchema: graphSchema,
 	}, h.handleGraph)
 
 	bsrv.Tool(server.ToolMeta{
@@ -107,8 +193,9 @@ func NewServer(s port.Store, version string) *batterymcp.Server {
 			"correlations (event_id, window — events from other sources within time window), " +
 			"trace_to_code (event_id — outgoing traces_to edges), " +
 			"trace_from_code (event_id — incoming traces_to edges).",
-		Keywords:   []string{"timeline", "search", "trace", "query", "events", "fts", "around", "correlations"},
-		Categories: []string{"query"},
+		Keywords:    []string{"timeline", "search", "trace", "query", "events", "fts", "around", "correlations"},
+		Categories:  []string{"query"},
+		InputSchema: querySchema,
 	}, h.handleQuery)
 
 	bsrv.Tool(server.ToolMeta{
@@ -118,8 +205,9 @@ func NewServer(s port.Store, version string) *batterymcp.Server {
 			"session_diff (session_id — compare consecutive instance pairs), " +
 			"environment_diff (environment_a, environment_b — compare all events), " +
 			"hot_cold_map (alias for instance_diff).",
-		Keywords:   []string{"diff", "compare", "hot", "cold", "regression"},
-		Categories: []string{"analysis"},
+		Keywords:    []string{"diff", "compare", "hot", "cold", "regression"},
+		Categories:  []string{"analysis"},
+		InputSchema: diffSchema,
 	}, h.handleDiff)
 
 	bsrv.Tool(server.ToolMeta{
@@ -130,8 +218,9 @@ func NewServer(s port.Store, version string) *batterymcp.Server {
 			"heatmap (session_id — instances x sources matrix), " +
 			"cube (session_id — instances x sources x hours 3D array), " +
 			"export (instance_id or session_id — wrapped output with metadata).",
-		Keywords:   []string{"scalar", "vector", "heatmap", "cube", "export", "tensor"},
-		Categories: []string{"projection"},
+		Keywords:    []string{"scalar", "vector", "heatmap", "cube", "export", "tensor"},
+		Categories:  []string{"projection"},
+		InputSchema: projectionSchema,
 	}, h.handleProjection)
 
 	return bsrv
@@ -249,6 +338,15 @@ func (h *handler) handleIntake(ctx context.Context, raw json.RawMessage) (tool.R
 }
 
 func (h *handler) addSource(ctx context.Context, in intakeInput) (tool.Result, error) {
+	if in.InstanceID == "" {
+		return tool.ErrorResult(fmt.Errorf("instance_id: %w", domain.ErrInstanceRequired)), nil
+	}
+	if in.Source == "" {
+		return tool.ErrorResult(fmt.Errorf("source: %w", domain.ErrInvalidInput)), nil
+	}
+	if len(in.Lines) == 0 {
+		return tool.ErrorResult(fmt.Errorf("lines: non-empty array required — read the file and pass individual lines, intake does not read files: %w", domain.ErrInvalidInput)), nil
+	}
 	var added int
 	for i, line := range in.Lines {
 		hash := hashLine(in.Source, line)
