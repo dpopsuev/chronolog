@@ -5,10 +5,15 @@ import (
 	"time"
 )
 
-// Sentinel errors for store lookups.
+// Sentinel errors.
 var (
-	ErrNotFound      = errors.New("not found")
-	ErrUnknownAction = errors.New("unknown action")
+	ErrNotFound              = errors.New("not found")
+	ErrUnknownAction         = errors.New("unknown action")
+	ErrDuplicateAlias        = errors.New("duplicate alias")
+	ErrInvalidInput          = errors.New("invalid input")
+	ErrSchemaVersionMismatch = errors.New("schema version mismatch")
+	ErrSourceNotFound        = errors.New("source not found")
+	ErrInstanceRequired      = errors.New("instance_id is required")
 )
 
 // Event is the atomic unit of the Chronolog timeline — one log line, one event.
@@ -77,4 +82,13 @@ type Bucket struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
 	Query       string `json:"query,omitempty"`
+}
+
+// Template represents a collapsed group of log lines sharing the same pattern.
+type Template struct {
+	Pattern   string    `json:"pattern"`
+	Count     int       `json:"count"`
+	FirstSeen time.Time `json:"first_seen"`
+	LastSeen  time.Time `json:"last_seen"`
+	Variables []string  `json:"variables,omitempty"`
 }

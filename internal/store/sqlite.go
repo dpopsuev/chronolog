@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -12,6 +13,11 @@ import (
 	"github.com/dpopsuev/chronolog/internal/domain"
 	"github.com/dpopsuev/chronolog/internal/port"
 	_ "modernc.org/sqlite" // SQLite driver registration
+)
+
+// Slog attribute key constants for the store layer.
+const (
+	logKeyDBPath = "db_path"
 )
 
 var _ port.Store = (*SQLiteStore)(nil)
@@ -125,10 +131,14 @@ func OpenSQLite(path string, busyTimeoutMs int) (*SQLiteStore, error) {
 			return nil, fmt.Errorf("set initial schema version: %w", err)
 		}
 	}
+	slog.InfoContext(context.Background(), "sqlite database opened", slog.String(logKeyDBPath, path))
 	return &SQLiteStore{db: db}, nil
 }
 
-func (s *SQLiteStore) Close() error { return s.db.Close() }
+func (s *SQLiteStore) Close() error {
+	slog.InfoContext(context.Background(), "sqlite database closed")
+	return s.db.Close()
+}
 
 func fmtTime(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
 func fmtTimePtr(t *time.Time) string {
@@ -173,11 +183,24 @@ func (s *SQLiteStore) GetEvent(ctx context.Context, id string) (*domain.Event, e
 }
 
 func (s *SQLiteStore) ListEvents(ctx context.Context, instanceID string, filter port.EventFilter) ([]*domain.Event, error) {
-	q := `SELECT id, instance_id, timestamp, time_confidence, message, source, source_hash, line_number, raw_line, labels, created_at FROM events WHERE instance_id = ? ORDER BY timestamp`
+	q := `SELECT id, instance_id, timestamp, time_confidence, message, source, source_hash, line_number, raw_line, labels, created_at FROM events WHERE instance_id = ?`
 	args := []any{instanceID}
+	if filter.After != nil {
+		q += " AND timestamp > ?"
+		args = append(args, fmtTime(*filter.After))
+	}
+	if filter.Before != nil {
+		q += " AND timestamp < ?"
+		args = append(args, fmtTime(*filter.Before))
+	}
+	q += " ORDER BY timestamp"
 	if filter.Limit > 0 {
 		q += " LIMIT ?"
 		args = append(args, filter.Limit)
+	}
+	if filter.Offset > 0 {
+		q += " OFFSET ?"
+		args = append(args, filter.Offset)
 	}
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
@@ -196,6 +219,7 @@ func (s *SQLiteStore) ListEvents(ctx context.Context, instanceID string, filter 
 }
 
 func (s *SQLiteStore) DeleteEvent(ctx context.Context, id string) error {
+	_, _ = s.db.ExecContext(ctx, `DELETE FROM events_fts WHERE event_id = ?`, id)
 	_, err := s.db.ExecContext(ctx, `DELETE FROM events WHERE id = ?`, id)
 	return err
 }

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -226,6 +227,44 @@ func TestSQLite_Edges(t *testing.T) {
 	}
 	if len(out) != 0 {
 		t.Fatalf("Neighbors after remove len = %d, want 0", len(out))
+	}
+}
+
+func TestSQLite_ListEvents_AfterBefore(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	s.PutDomain(ctx, &domain.Domain{ID: "d1", Name: "test", CreatedAt: time.Now().UTC()})
+	s.PutEnvironment(ctx, &domain.Environment{ID: "e1", DomainID: "d1", Name: "env", CreatedAt: time.Now().UTC()})
+	s.PutSession(ctx, &domain.Session{ID: "s1", EnvironmentID: "e1", Name: "sess", StartedAt: time.Now().UTC()})
+	s.PutInstance(ctx, &domain.Instance{ID: "i1", SessionID: "s1", Name: "inst", StartedAt: time.Now().UTC()})
+
+	base := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	for i := range 5 {
+		ts := base.Add(time.Duration(i) * time.Second)
+		e := &domain.Event{
+			ID: fmt.Sprintf("ev%d", i), InstanceID: "i1", Timestamp: ts,
+			TimeConfidence: domain.ConfidenceRFC3339,
+			Message:        fmt.Sprintf("event %d", i), Source: "a.log",
+			SourceHash: fmt.Sprintf("h%d", i), LineNumber: i + 1,
+			RawLine: fmt.Sprintf("event %d", i), CreatedAt: ts,
+		}
+		if err := s.PutEvent(ctx, e); err != nil {
+			t.Fatalf("PutEvent %d: %v", i, err)
+		}
+	}
+
+	after := base.Add(time.Second)      // after ev0, ev1
+	before := base.Add(4 * time.Second) // before ev4
+	events, err := s.ListEvents(ctx, "i1", port.EventFilter{After: &after, Before: &before})
+	if err != nil {
+		t.Fatalf("ListEvents: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("ListEvents len = %d, want 2 (ev2, ev3)", len(events))
+	}
+	if events[0].ID != "ev2" || events[1].ID != "ev3" {
+		t.Errorf("events = [%s, %s], want [ev2, ev3]", events[0].ID, events[1].ID)
 	}
 }
 

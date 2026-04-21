@@ -1,10 +1,17 @@
 package config
 
 import (
+	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 
 	"gopkg.in/yaml.v3"
+)
+
+// Slog attribute key constants for the config layer.
+const (
+	logKeyConfigPath = "config_path"
 )
 
 // Config is the top-level configuration.
@@ -39,6 +46,7 @@ func Resolve(explicit string) (*Config, error) {
 		}
 		cfg, err := load(p)
 		if err == nil {
+			slog.DebugContext(context.Background(), "config file loaded", slog.String(logKeyConfigPath, p))
 			applyDefaults(cfg)
 			return cfg, nil
 		}

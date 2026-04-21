@@ -1,10 +1,17 @@
 package parser
 
 import (
+	"context"
+	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/dpopsuev/chronolog/internal/domain"
+)
+
+// Slog attribute key constants for the parser layer.
+const (
+	logKeyLine = "line"
 )
 
 // Parse detects and parses a timestamp from a log line.
@@ -12,6 +19,9 @@ import (
 func Parse(line string) (ts time.Time, confidence string) {
 	if t, ok := tryRFC3339(line); ok {
 		return t, domain.ConfidenceRFC3339
+	}
+	if line != "" {
+		slog.DebugContext(context.Background(), "timestamp confidence unknown", slog.String(logKeyLine, line))
 	}
 	return time.Time{}, domain.ConfidenceUnknown
 }
