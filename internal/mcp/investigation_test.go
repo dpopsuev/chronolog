@@ -274,15 +274,29 @@ func TestForensicInvestigationWorkflow(t *testing.T) { //nolint:funlen // e2e in
 
 	// ---- Phase 7: Immutability ----
 	t.Run("set_immutable", func(t *testing.T) {
-		call(t, h.handleChronolog, map[string]any{
+		res := call(t, h.handleChronolog, map[string]any{
 			"action": "set_immutable", "instance_id": inst2ID,
+		})
+		text := resultText(t, res)
+		if !strings.Contains(text, `"immutable": true`) {
+			t.Fatalf("expected immutable=true, got %s", text)
+		}
+	})
+
+	t.Run("immutable_blocks_remove", func(t *testing.T) {
+		callExpectError(t, h.handleIntake, map[string]any{
+			"action": "remove_source", "instance_id": inst2ID, "source": "syslog",
 		})
 	})
 
 	t.Run("verify_integrity", func(t *testing.T) {
-		call(t, h.handleChronolog, map[string]any{
+		res := call(t, h.handleChronolog, map[string]any{
 			"action": "verify_integrity", "instance_id": inst2ID,
 		})
+		text := resultText(t, res)
+		if !strings.Contains(text, `"valid": true`) {
+			t.Fatalf("expected valid=true, got %s", text)
+		}
 	})
 
 	// ---- Phase 8: Regression gate ----

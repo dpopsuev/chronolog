@@ -44,7 +44,9 @@ var intakeSchema = json.RawMessage(`{
 		"action": {"type": "string", "enum": ["add_source", "list_sources", "remove_source"], "description": "Intake action"},
 		"instance_id": {"type": "string", "description": "UUID of the target instance"},
 		"source": {"type": "string", "description": "Source label (e.g. filename or service name)"},
-		"lines": {"type": "array", "items": {"type": "string"}, "description": "Log lines to ingest. Caller must read the file and split into lines — intake does not read files."}
+		"lines": {"type": "array", "items": {"type": "string"}, "description": "Log lines to ingest. Caller must read the file and split into lines — intake does not read files."},
+		"collector": {"type": "string", "description": "Who/what collected this source (optional provenance)"},
+		"file_hash": {"type": "string", "description": "SHA256 hash of the original file (optional provenance)"}
 	},
 	"required": ["action"]
 }`)
@@ -373,8 +375,35 @@ func (h *handler) handleChronolog(ctx context.Context, raw json.RawMessage) (too
 			return tool.ErrorResult(err), nil
 		}
 		return jsonResult(map[string]any{"deleted": true})
-	case "set_immutable", "verify_integrity":
-		return jsonResult(map[string]any{"status": "stub"})
+	case "set_immutable":
+		if in.InstanceID == "" {
+			return tool.ErrorResult(fmt.Errorf("instance_id: %w", domain.ErrInstanceRequired)), nil
+		}
+		inst, err := h.store.GetInstance(ctx, in.InstanceID)
+		if err != nil {
+			return tool.ErrorResult(err), nil
+		}
+		inst.Immutable = true
+		if err := h.store.PutInstance(ctx, inst); err != nil {
+			return tool.ErrorResult(err), nil
+		}
+		return jsonResult(inst)
+	case "verify_integrity":
+		if in.InstanceID == "" {
+			return tool.ErrorResult(fmt.Errorf("instance_id: %w", domain.ErrInstanceRequired)), nil
+		}
+		events, err := h.store.ListEvents(ctx, in.InstanceID, port.EventFilter{Limit: 100000})
+		if err != nil {
+			return tool.ErrorResult(err), nil
+		}
+		var broken []map[string]any
+		for _, e := range events {
+			expected := hashLine(e.Source, e.RawLine)
+			if e.SourceHash != expected {
+				broken = append(broken, map[string]any{"event_id": e.ID, "expected": expected, "actual": e.SourceHash})
+			}
+		}
+		return jsonResult(map[string]any{"valid": len(broken) == 0, "events_checked": len(events), "broken": broken})
 	default:
 		return tool.ErrorResult(fmt.Errorf("chronolog action %q: %w", in.Action, domain.ErrUnknownAction)), nil
 	}
@@ -387,6 +416,8 @@ type intakeInput struct {
 	InstanceID string   `json:"instance_id,omitempty"`
 	Source     string   `json:"source,omitempty"`
 	Lines      []string `json:"lines,omitempty"`
+	Collector  string   `json:"collector,omitempty"`
+	FileHash   string   `json:"file_hash,omitempty"`
 }
 
 func (h *handler) handleIntake(ctx context.Context, raw json.RawMessage) (tool.Result, error) {
@@ -442,6 +473,8 @@ func (h *handler) addSource(ctx context.Context, in intakeInput) (tool.Result, e
 			SourceHash:     hash,
 			LineNumber:     lineNum,
 			RawLine:        line,
+			Collector:      in.Collector,
+			FileHash:       in.FileHash,
 			CreatedAt:      time.Now().UTC(),
 		}
 
@@ -464,6 +497,9 @@ func (h *handler) removeSource(ctx context.Context, in intakeInput) (tool.Result
 	}
 	if in.Source == "" {
 		return tool.ErrorResult(fmt.Errorf("source: %w", domain.ErrInvalidInput)), nil
+	}
+	if inst, err := h.store.GetInstance(ctx, in.InstanceID); err == nil && inst.Immutable {
+		return tool.ErrorResult(fmt.Errorf("instance is immutable — evidence cannot be modified: %w", domain.ErrInvalidInput)), nil
 	}
 	events, err := h.store.ListEvents(ctx, in.InstanceID, port.EventFilter{Limit: 10000})
 	if err != nil {
@@ -750,6 +786,9 @@ func (h *handler) collapseInstance(ctx context.Context, in *graphInput) (tool.Re
 func (h *handler) purgeInstance(ctx context.Context, in *graphInput) (tool.Result, error) {
 	if in.InstanceID == "" {
 		return tool.ErrorResult(fmt.Errorf("instance_id: %w", domain.ErrInstanceRequired)), nil
+	}
+	if inst, err := h.store.GetInstance(ctx, in.InstanceID); err == nil && inst.Immutable {
+		return tool.ErrorResult(fmt.Errorf("instance is immutable — evidence cannot be modified: %w", domain.ErrInvalidInput)), nil
 	}
 	events, err := h.store.ListEvents(ctx, in.InstanceID, port.EventFilter{Limit: 100000})
 	if err != nil {

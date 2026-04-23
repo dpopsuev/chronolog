@@ -28,6 +28,8 @@ type Event struct {
 	LineNumber     int               `json:"line_number"`
 	RawLine        string            `json:"raw_line"`
 	Labels         map[string]string `json:"labels,omitempty"`
+	Collector      string            `json:"collector,omitempty"`
+	FileHash       string            `json:"file_hash,omitempty"`
 	CreatedAt      time.Time         `json:"created_at"`
 }
 

@@ -37,6 +37,7 @@ type Instance struct {
 	Name          string     `json:"name"`
 	Alias         string     `json:"alias,omitempty"`
 	SourcePattern string     `json:"source_pattern,omitempty"`
+	Immutable     bool       `json:"immutable,omitempty"`
 	StartedAt     time.Time  `json:"started_at"`
 	EndedAt       *time.Time `json:"ended_at,omitempty"`
 }
