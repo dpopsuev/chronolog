@@ -107,6 +107,17 @@ func (m *MemStore) DeleteEvent(_ context.Context, id string) error {
 	return nil
 }
 
+func (m *MemStore) UpdateEventLabels(_ context.Context, id string, labels map[string]string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	e, ok := m.events[id]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	e.Labels = labels
+	return nil
+}
+
 func (m *MemStore) SearchEvents(_ context.Context, query string, limit int) ([]*domain.Event, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

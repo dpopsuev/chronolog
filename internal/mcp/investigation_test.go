@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/dpopsuev/chronolog/internal/store"
@@ -116,15 +117,31 @@ func TestForensicInvestigationWorkflow(t *testing.T) { //nolint:funlen // e2e in
 	})
 
 	t.Run("list_labels", func(t *testing.T) {
-		call(t, h.handleGraph, map[string]any{
+		res := call(t, h.handleGraph, map[string]any{
 			"action": "list_labels", "event_id": defectEventID,
 		})
+		text := resultText(t, res)
+		if !strings.Contains(text, "smoking_gun") {
+			t.Fatalf("expected smoking_gun label, got %s", text)
+		}
 	})
 
 	t.Run("unlabel_event", func(t *testing.T) {
 		call(t, h.handleGraph, map[string]any{
 			"action": "unlabel_event", "event_id": defectEventID, "key": "category",
 		})
+		res := call(t, h.handleGraph, map[string]any{
+			"action": "list_labels", "event_id": defectEventID,
+		})
+		text := resultText(t, res)
+		if strings.Contains(text, "smoking_gun") {
+			t.Fatal("expected smoking_gun label removed after unlabel")
+		}
+	})
+
+	// Re-label for subsequent tests
+	call(t, h.handleGraph, map[string]any{
+		"action": "label_event", "event_id": defectEventID, "key": "category", "value": "smoking_gun",
 	})
 
 	// ---- Phase 3: Label/Bookmark queries ----

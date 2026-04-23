@@ -132,6 +132,7 @@ const (
 	logKeyCount      = "count"
 	logKeySessionID  = "session_id"
 	logKeyRelation   = "relation"
+	logKeyLabelKey   = "label_key"
 )
 
 const instructions = "Chronolog consolidates multiple log sources into a single clean " +
@@ -530,8 +531,12 @@ func (h *handler) handleGraph(ctx context.Context, raw json.RawMessage) (tool.Re
 		return h.collapseInstance(ctx, &in)
 	case "purge":
 		return h.purgeInstance(ctx, &in)
-	case "label_event", "unlabel_event", "list_labels":
-		return jsonResult(map[string]any{"status": "stub"})
+	case "label_event":
+		return h.labelEvent(ctx, &in)
+	case "unlabel_event":
+		return h.unlabelEvent(ctx, &in)
+	case "list_labels":
+		return h.listLabels(ctx, &in)
 	case "auto_trace", "blame", "change_window":
 		return jsonResult(map[string]any{"status": "stub"})
 	default:
@@ -581,6 +586,52 @@ func (h *handler) listHighlights(ctx context.Context, in *graphInput) (tool.Resu
 		return tool.ErrorResult(err), nil
 	}
 	return jsonResult(hs)
+}
+
+func (h *handler) labelEvent(ctx context.Context, in *graphInput) (tool.Result, error) {
+	if in.EventID == "" || in.Key == "" {
+		return tool.ErrorResult(fmt.Errorf("event_id and key: %w", domain.ErrInvalidInput)), nil
+	}
+	e, err := h.store.GetEvent(ctx, in.EventID)
+	if err != nil {
+		return tool.ErrorResult(err), nil
+	}
+	if e.Labels == nil {
+		e.Labels = make(map[string]string)
+	}
+	e.Labels[in.Key] = in.Value
+	if err := h.store.UpdateEventLabels(ctx, e.ID, e.Labels); err != nil {
+		return tool.ErrorResult(err), nil
+	}
+	slog.DebugContext(ctx, "label set", slog.String(logKeyEventID, e.ID), slog.String(logKeyLabelKey, in.Key))
+	return jsonResult(e)
+}
+
+func (h *handler) unlabelEvent(ctx context.Context, in *graphInput) (tool.Result, error) {
+	if in.EventID == "" || in.Key == "" {
+		return tool.ErrorResult(fmt.Errorf("event_id and key: %w", domain.ErrInvalidInput)), nil
+	}
+	e, err := h.store.GetEvent(ctx, in.EventID)
+	if err != nil {
+		return tool.ErrorResult(err), nil
+	}
+	delete(e.Labels, in.Key)
+	if err := h.store.UpdateEventLabels(ctx, e.ID, e.Labels); err != nil {
+		return tool.ErrorResult(err), nil
+	}
+	slog.DebugContext(ctx, "label removed", slog.String(logKeyEventID, e.ID), slog.String(logKeyLabelKey, in.Key))
+	return jsonResult(e)
+}
+
+func (h *handler) listLabels(ctx context.Context, in *graphInput) (tool.Result, error) {
+	if in.EventID == "" {
+		return tool.ErrorResult(fmt.Errorf("event_id: %w", domain.ErrInvalidInput)), nil
+	}
+	e, err := h.store.GetEvent(ctx, in.EventID)
+	if err != nil {
+		return tool.ErrorResult(err), nil
+	}
+	return jsonResult(e.Labels)
 }
 
 func (h *handler) registerService(ctx context.Context, in *graphInput) (tool.Result, error) {

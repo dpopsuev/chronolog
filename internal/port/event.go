@@ -22,4 +22,5 @@ type EventStore interface {
 	ListEvents(ctx context.Context, instanceID string, filter EventFilter) ([]*domain.Event, error)
 	DeleteEvent(ctx context.Context, id string) error
 	SearchEvents(ctx context.Context, query string, limit int) ([]*domain.Event, error)
+	UpdateEventLabels(ctx context.Context, id string, labels map[string]string) error
 }

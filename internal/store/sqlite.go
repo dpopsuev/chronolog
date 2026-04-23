@@ -224,6 +224,22 @@ func (s *SQLiteStore) DeleteEvent(ctx context.Context, id string) error {
 	return err
 }
 
+func (s *SQLiteStore) UpdateEventLabels(ctx context.Context, id string, labels map[string]string) error {
+	data, err := json.Marshal(labels)
+	if err != nil {
+		return err
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE events SET labels = ? WHERE id = ?`, string(data), id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
 func (s *SQLiteStore) SearchEvents(ctx context.Context, query string, limit int) ([]*domain.Event, error) {
 	if limit <= 0 {
 		limit = 100
