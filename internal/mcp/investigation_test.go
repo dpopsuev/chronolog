@@ -146,34 +146,61 @@ func TestForensicInvestigationWorkflow(t *testing.T) { //nolint:funlen // e2e in
 
 	// ---- Phase 3: Label/Bookmark queries ----
 	t.Run("search_by_label", func(t *testing.T) {
-		call(t, h.handleQuery, map[string]any{
+		res := call(t, h.handleQuery, map[string]any{
 			"action": "search_by_label", "key": "category", "value": "smoking_gun", "instance_id": inst2ID,
 		})
+		found := extractArray(t, res)
+		if len(found) != 1 {
+			t.Fatalf("expected 1 labeled event, got %d", len(found))
+		}
 	})
 
 	t.Run("search_by_bookmark", func(t *testing.T) {
-		call(t, h.handleQuery, map[string]any{
+		// Add a bookmark first
+		call(t, h.handleGraph, map[string]any{
+			"action": "add_bookmark", "event_id": defectEventID, "label": "suspicious", "note": "timing anomaly",
+		})
+		res := call(t, h.handleQuery, map[string]any{
 			"action": "search_by_bookmark", "label": "suspicious", "instance_id": inst2ID,
 		})
+		found := extractArray(t, res)
+		if len(found) != 1 {
+			t.Fatalf("expected 1 bookmarked event, got %d", len(found))
+		}
 	})
 
 	// ---- Phase 4: Forensic analysis ----
 	t.Run("suspects", func(t *testing.T) {
-		call(t, h.handleQuery, map[string]any{
-			"action": "suspects", "key": "category", "value": "symptom", "instance_id": inst2ID,
+		res := call(t, h.handleQuery, map[string]any{
+			"action": "suspects", "key": "category", "value": "smoking_gun", "instance_id": inst2ID, "window": 10,
 		})
+		found := extractArray(t, res)
+		if len(found) == 0 {
+			t.Fatal("expected at least one suspect source")
+		}
 	})
 
 	t.Run("time_of_defect", func(t *testing.T) {
-		call(t, h.handleQuery, map[string]any{
+		res := call(t, h.handleQuery, map[string]any{
 			"action": "time_of_defect", "pattern": "CLOCK_UNSYNC", "instance_id": inst2ID,
 		})
+		text := resultText(t, res)
+		if !strings.Contains(text, "last_healthy") {
+			t.Fatalf("expected last_healthy in result, got %s", text)
+		}
+		if !strings.Contains(text, "first_defect") {
+			t.Fatalf("expected first_defect in result, got %s", text)
+		}
 	})
 
 	t.Run("recurrence", func(t *testing.T) {
-		call(t, h.handleQuery, map[string]any{
+		res := call(t, h.handleQuery, map[string]any{
 			"action": "recurrence", "pattern": "CLOCK_UNSYNC", "environment_id": envID,
 		})
+		text := resultText(t, res)
+		if !strings.Contains(text, "present_sessions") {
+			t.Fatalf("expected present_sessions in result, got %s", text)
+		}
 	})
 
 	// ---- Phase 5: Buckets ----

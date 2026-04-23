@@ -133,6 +133,7 @@ const (
 	logKeySessionID  = "session_id"
 	logKeyRelation   = "relation"
 	logKeyLabelKey   = "label_key"
+	logKeyCodebaseID = "codebase_id"
 )
 
 const instructions = "Chronolog consolidates multiple log sources into a single clean " +
@@ -537,8 +538,12 @@ func (h *handler) handleGraph(ctx context.Context, raw json.RawMessage) (tool.Re
 		return h.unlabelEvent(ctx, &in)
 	case "list_labels":
 		return h.listLabels(ctx, &in)
-	case "auto_trace", "blame", "change_window":
-		return jsonResult(map[string]any{"status": "stub"})
+	case "auto_trace":
+		return h.autoTrace(ctx, &in)
+	case "blame":
+		return h.blameEvent(ctx, &in)
+	case "change_window":
+		return h.changeWindow(ctx, &in)
 	default:
 		return tool.ErrorResult(fmt.Errorf("graph action %q: %w", in.Action, domain.ErrUnknownAction)), nil
 	}
@@ -784,8 +789,16 @@ func (h *handler) handleQuery(ctx context.Context, raw json.RawMessage) (tool.Re
 		return h.traceCode(ctx, in, port.Outgoing)
 	case "trace_from_code":
 		return h.traceCode(ctx, in, port.Incoming)
-	case "search_by_label", "search_by_bookmark", "suspects", "time_of_defect", "recurrence":
-		return jsonResult(map[string]any{"status": "stub"})
+	case "search_by_label":
+		return h.searchByLabel(ctx, in)
+	case "search_by_bookmark":
+		return h.searchByBookmark(ctx, in)
+	case "suspects":
+		return h.suspects(ctx, in)
+	case "time_of_defect":
+		return h.timeOfDefect(ctx, in)
+	case "recurrence":
+		return h.recurrence(ctx, in)
 	default:
 		return tool.ErrorResult(fmt.Errorf("query action %q: %w", in.Action, domain.ErrUnknownAction)), nil
 	}

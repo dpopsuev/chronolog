@@ -84,6 +84,23 @@ type Bucket struct {
 	Query       string `json:"query,omitempty"`
 }
 
+// BlameResult holds git blame output for a single line.
+type BlameResult struct {
+	Author     string    `json:"author"`
+	CommitHash string    `json:"commit_hash"`
+	Date       time.Time `json:"date"`
+	Subject    string    `json:"subject"`
+}
+
+// GitCommit represents a commit from git log output.
+type GitCommit struct {
+	Hash    string    `json:"hash"`
+	Author  string    `json:"author"`
+	Date    time.Time `json:"date"`
+	Subject string    `json:"subject"`
+	Files   []string  `json:"files,omitempty"`
+}
+
 // Template represents a collapsed group of log lines sharing the same pattern.
 type Template struct {
 	Pattern   string    `json:"pattern"`
