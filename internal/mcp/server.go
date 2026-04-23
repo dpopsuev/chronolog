@@ -977,8 +977,16 @@ func (h *handler) handleDiff(ctx context.Context, raw json.RawMessage) (tool.Res
 		return h.sessionDiff(ctx, in)
 	case "environment_diff":
 		return h.environmentDiff(ctx, in)
-	case "regression_check", "set_baseline":
-		return jsonResult(map[string]any{"status": "stub"})
+	case "regression_check":
+		return h.regressionCheck(ctx, in)
+	case "set_baseline":
+		if in.SessionID == "" {
+			return tool.ErrorResult(fmt.Errorf("session_id: %w", domain.ErrInvalidInput)), nil
+		}
+		if err := h.store.SetAlias(ctx, in.SessionID, "baseline"); err != nil {
+			return tool.ErrorResult(err), nil
+		}
+		return jsonResult(map[string]any{"baseline_session_id": in.SessionID})
 	default:
 		return tool.ErrorResult(fmt.Errorf("diff action %q: %w", in.Action, domain.ErrUnknownAction)), nil
 	}

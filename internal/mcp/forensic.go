@@ -291,3 +291,60 @@ func (h *handler) recurrence(ctx context.Context, in queryInput) (tool.Result, e
 		"present_sessions": presentCount,
 	})
 }
+
+func (h *handler) regressionCheck(ctx context.Context, in diffInput) (tool.Result, error) {
+	if in.SessionID == "" || in.BaselineSessionID == "" {
+		return tool.ErrorResult(fmt.Errorf("session_id and baseline_session_id: %w", domain.ErrInvalidInput)), nil
+	}
+	currentEvents, err := h.collectSessionEvents(ctx, in.SessionID)
+	if err != nil {
+		return tool.ErrorResult(err), nil
+	}
+	baselineEvents, err := h.collectSessionEvents(ctx, in.BaselineSessionID)
+	if err != nil {
+		return tool.ErrorResult(err), nil
+	}
+
+	diff := computeDiff(currentEvents, baselineEvents)
+	hotPatterns, _ := diff["hot"].([]map[string]any)
+
+	var newPatterns []map[string]any
+	for _, p := range hotPatterns {
+		if side, _ := p["side"].(string); side == "A" {
+			newPatterns = append(newPatterns, p)
+		}
+	}
+
+	threshold := in.Threshold
+	verdict := "pass"
+	if len(newPatterns) > threshold {
+		verdict = "fail"
+	}
+
+	slog.DebugContext(ctx, "regression_check completed",
+		slog.String(logKeySessionID, in.SessionID),
+		slog.Int(logKeyCount, len(newPatterns)),
+	)
+	return jsonResult(map[string]any{
+		"verdict":      verdict,
+		"hot_count":    len(newPatterns),
+		"threshold":    threshold,
+		"new_patterns": newPatterns,
+	})
+}
+
+func (h *handler) collectSessionEvents(ctx context.Context, sessionID string) ([]*domain.Event, error) {
+	instances, err := h.store.ListInstances(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	var all []*domain.Event
+	for _, inst := range instances {
+		events, eErr := h.store.ListEvents(ctx, inst.ID, port.EventFilter{Limit: 100000})
+		if eErr != nil {
+			return nil, eErr
+		}
+		all = append(all, events...)
+	}
+	return all, nil
+}

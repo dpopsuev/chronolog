@@ -301,8 +301,12 @@ func TestForensicInvestigationWorkflow(t *testing.T) { //nolint:funlen // e2e in
 
 	// ---- Phase 8: Regression gate ----
 	t.Run("regression_check", func(t *testing.T) {
-		call(t, h.handleDiff, map[string]any{
+		res := call(t, h.handleDiff, map[string]any{
 			"action": "regression_check", "session_id": sess2ID, "baseline_session_id": sess1ID,
 		})
+		text := resultText(t, res)
+		if !strings.Contains(text, `"verdict"`) {
+			t.Fatalf("expected verdict in result, got %s", text)
+		}
 	})
 }
