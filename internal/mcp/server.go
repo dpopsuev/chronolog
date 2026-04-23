@@ -23,13 +23,17 @@ import (
 var chronologSchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
-		"action": {"type": "string", "enum": ["create_domain", "list_domains", "create_environment", "list_environments", "create_session", "list_sessions", "create_instance", "list_instances"], "description": "Cascade lifecycle action"},
+		"action": {"type": "string", "enum": ["create_domain", "list_domains", "create_environment", "list_environments", "create_session", "list_sessions", "create_instance", "list_instances", "create_phase", "list_phases", "create_bucket", "list_buckets", "get_bucket", "delete_bucket", "set_immutable", "verify_integrity"], "description": "Cascade lifecycle action"},
 		"name": {"type": "string", "description": "Name for the new entity"},
 		"domain_id": {"type": "string", "description": "Parent domain UUID (for environment)"},
 		"environment_id": {"type": "string", "description": "Parent environment UUID (for session)"},
 		"session_id": {"type": "string", "description": "Parent session UUID (for instance)"},
+		"instance_id": {"type": "string", "description": "Parent instance UUID (for phase)"},
+		"bucket_id": {"type": "string", "description": "Bucket UUID"},
 		"description": {"type": "string"},
-		"alias": {"type": "string", "description": "Mutable human-friendly alias"}
+		"alias": {"type": "string", "description": "Mutable human-friendly alias"},
+		"label": {"type": "string", "description": "Phase label"},
+		"query": {"type": "string", "description": "Bucket saved query"}
 	},
 	"required": ["action"]
 }`)
@@ -48,19 +52,24 @@ var intakeSchema = json.RawMessage(`{
 var graphSchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
-		"action": {"type": "string", "enum": ["add_edge", "remove_edge", "merge", "collapse", "purge", "add_bookmark", "list_bookmarks", "add_highlight", "list_highlights", "register_service", "list_services", "register_codebase", "list_codebases"], "description": "Graph action"},
+		"action": {"type": "string", "enum": ["add_edge", "remove_edge", "merge", "collapse", "purge", "add_bookmark", "list_bookmarks", "add_highlight", "list_highlights", "register_service", "list_services", "register_codebase", "list_codebases", "label_event", "unlabel_event", "list_labels", "auto_trace", "blame", "change_window"], "description": "Graph action"},
 		"instance_id": {"type": "string", "description": "Instance UUID (for merge/collapse/purge)"},
 		"from_id": {"type": "string", "description": "Source node UUID (for edges)"},
 		"relation": {"type": "string", "enum": ["contains", "precedes", "traces_to", "produced_by", "grouped_in"], "description": "Edge relation type"},
 		"to_id": {"type": "string", "description": "Target node UUID (for edges)"},
-		"event_id": {"type": "string", "description": "Event UUID (for bookmarks/highlights)"},
+		"event_id": {"type": "string", "description": "Event UUID (for bookmarks/highlights/labels/blame)"},
 		"label": {"type": "string"},
 		"note": {"type": "string"},
 		"substring": {"type": "string", "description": "Text to highlight in event"},
 		"name": {"type": "string", "description": "Service or codebase name"},
 		"description": {"type": "string"},
 		"repo_url": {"type": "string"},
-		"root_path": {"type": "string"}
+		"root_path": {"type": "string"},
+		"key": {"type": "string", "description": "Label key (for label_event/unlabel_event)"},
+		"value": {"type": "string", "description": "Label value (for label_event)"},
+		"codebase_id": {"type": "string", "description": "Codebase UUID (for auto_trace/change_window)"},
+		"after": {"type": "string", "description": "Start time for change_window (RFC3339)"},
+		"before": {"type": "string", "description": "End time for change_window (RFC3339)"}
 	},
 	"required": ["action"]
 }`)
@@ -68,10 +77,16 @@ var graphSchema = json.RawMessage(`{
 var querySchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
-		"action": {"type": "string", "enum": ["timeline", "search", "around", "correlations", "trace_to_code", "trace_from_code"], "description": "Query action"},
-		"instance_id": {"type": "string", "description": "Instance UUID (for timeline)"},
+		"action": {"type": "string", "enum": ["timeline", "search", "around", "correlations", "trace_to_code", "trace_from_code", "search_by_label", "search_by_bookmark", "suspects", "time_of_defect", "recurrence"], "description": "Query action"},
+		"instance_id": {"type": "string", "description": "Instance UUID (for timeline/scoped queries)"},
+		"session_id": {"type": "string", "description": "Session UUID (for scoped queries)"},
+		"environment_id": {"type": "string", "description": "Environment UUID (for recurrence)"},
 		"event_id": {"type": "string", "description": "Event UUID (for around/correlations/trace)"},
 		"query": {"type": "string", "description": "FTS5 search query (for search)"},
+		"key": {"type": "string", "description": "Label key (for search_by_label/suspects)"},
+		"value": {"type": "string", "description": "Label value (for search_by_label/suspects)"},
+		"pattern": {"type": "string", "description": "Log pattern to match (for time_of_defect/recurrence)"},
+		"label": {"type": "string", "description": "Bookmark label filter (for search_by_bookmark)"},
 		"limit": {"type": "integer", "description": "Max results (default 100)"},
 		"window": {"type": "integer", "description": "Correlation window in seconds (default 5)"}
 	},
@@ -81,13 +96,15 @@ var querySchema = json.RawMessage(`{
 var diffSchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
-		"action": {"type": "string", "enum": ["instance_diff", "session_diff", "environment_diff", "hot_cold_map"], "description": "Diff action"},
+		"action": {"type": "string", "enum": ["instance_diff", "session_diff", "environment_diff", "hot_cold_map", "regression_check", "set_baseline"], "description": "Diff action"},
 		"instance_a": {"type": "string", "description": "First instance UUID"},
 		"instance_b": {"type": "string", "description": "Second instance UUID"},
-		"session_id": {"type": "string", "description": "Session UUID (for session_diff)"},
+		"session_id": {"type": "string", "description": "Session UUID (for session_diff/regression_check)"},
+		"baseline_session_id": {"type": "string", "description": "Baseline session UUID (for regression_check)"},
 		"environment_a": {"type": "string", "description": "First environment UUID"},
 		"environment_b": {"type": "string", "description": "Second environment UUID"},
-		"limit": {"type": "integer", "description": "Max events per instance (default 50)"}
+		"limit": {"type": "integer", "description": "Max events per instance (default 50)"},
+		"threshold": {"type": "integer", "description": "Max new patterns before fail (default 0)"}
 	},
 	"required": ["action"]
 }`)
@@ -238,8 +255,12 @@ type chronologInput struct {
 	DomainID      string `json:"domain_id,omitempty"`
 	EnvironmentID string `json:"environment_id,omitempty"`
 	SessionID     string `json:"session_id,omitempty"`
+	InstanceID    string `json:"instance_id,omitempty"`
+	BucketID      string `json:"bucket_id,omitempty"`
 	Description   string `json:"description,omitempty"`
 	Alias         string `json:"alias,omitempty"`
+	Label         string `json:"label,omitempty"`
+	Query         string `json:"query,omitempty"`
 }
 
 func (h *handler) handleChronolog(ctx context.Context, raw json.RawMessage) (tool.Result, error) {
@@ -297,6 +318,14 @@ func (h *handler) handleChronolog(ctx context.Context, raw json.RawMessage) (too
 			return tool.ErrorResult(err), nil
 		}
 		return jsonResult(is)
+	case "create_phase", "list_phases":
+		return jsonResult(map[string]any{"status": "stub"})
+	case "create_bucket", "list_buckets", "get_bucket", "delete_bucket":
+		return jsonResult(map[string]any{"status": "stub"})
+	case "set_immutable", "verify_integrity":
+		return jsonResult(map[string]any{"status": "stub"})
+	case "open_case":
+		return jsonResult(map[string]any{"status": "stub"})
 	default:
 		return tool.ErrorResult(fmt.Errorf("chronolog action %q: %w", in.Action, domain.ErrUnknownAction)), nil
 	}
@@ -437,6 +466,11 @@ type graphInput struct {
 	RepoURL     string `json:"repo_url,omitempty"`
 	RootPath    string `json:"root_path,omitempty"`
 	InstanceID  string `json:"instance_id,omitempty"`
+	Key         string `json:"key,omitempty"`
+	Value       string `json:"value,omitempty"`
+	CodebaseID  string `json:"codebase_id,omitempty"`
+	After       string `json:"after,omitempty"`
+	Before      string `json:"before,omitempty"`
 }
 
 func (h *handler) handleGraph(ctx context.Context, raw json.RawMessage) (tool.Result, error) {
@@ -459,33 +493,37 @@ func (h *handler) handleGraph(ctx context.Context, raw json.RawMessage) (tool.Re
 		}
 		return tool.TextResult("edge removed"), nil
 	case "add_bookmark":
-		return h.addBookmark(ctx, in)
+		return h.addBookmark(ctx, &in)
 	case "list_bookmarks":
-		return h.listBookmarks(ctx, in)
+		return h.listBookmarks(ctx, &in)
 	case "add_highlight":
-		return h.addHighlight(ctx, in)
+		return h.addHighlight(ctx, &in)
 	case "list_highlights":
-		return h.listHighlights(ctx, in)
+		return h.listHighlights(ctx, &in)
 	case "register_service":
-		return h.registerService(ctx, in)
+		return h.registerService(ctx, &in)
 	case "list_services":
 		return h.listServices(ctx)
 	case "register_codebase":
-		return h.registerCodebase(ctx, in)
+		return h.registerCodebase(ctx, &in)
 	case "list_codebases":
 		return h.listCodebases(ctx)
 	case "merge":
-		return h.mergeInstance(ctx, in)
+		return h.mergeInstance(ctx, &in)
 	case "collapse":
-		return h.collapseInstance(ctx, in)
+		return h.collapseInstance(ctx, &in)
 	case "purge":
-		return h.purgeInstance(ctx, in)
+		return h.purgeInstance(ctx, &in)
+	case "label_event", "unlabel_event", "list_labels":
+		return jsonResult(map[string]any{"status": "stub"})
+	case "auto_trace", "blame", "change_window":
+		return jsonResult(map[string]any{"status": "stub"})
 	default:
 		return tool.ErrorResult(fmt.Errorf("graph action %q: %w", in.Action, domain.ErrUnknownAction)), nil
 	}
 }
 
-func (h *handler) addBookmark(ctx context.Context, in graphInput) (tool.Result, error) {
+func (h *handler) addBookmark(ctx context.Context, in *graphInput) (tool.Result, error) {
 	if in.EventID == "" {
 		return tool.ErrorResult(fmt.Errorf("event_id: %w", domain.ErrInvalidInput)), nil
 	}
@@ -496,7 +534,7 @@ func (h *handler) addBookmark(ctx context.Context, in graphInput) (tool.Result, 
 	return jsonResult(b)
 }
 
-func (h *handler) listBookmarks(ctx context.Context, in graphInput) (tool.Result, error) {
+func (h *handler) listBookmarks(ctx context.Context, in *graphInput) (tool.Result, error) {
 	if in.EventID == "" {
 		return tool.ErrorResult(fmt.Errorf("event_id: %w", domain.ErrInvalidInput)), nil
 	}
@@ -507,7 +545,7 @@ func (h *handler) listBookmarks(ctx context.Context, in graphInput) (tool.Result
 	return jsonResult(bs)
 }
 
-func (h *handler) addHighlight(ctx context.Context, in graphInput) (tool.Result, error) {
+func (h *handler) addHighlight(ctx context.Context, in *graphInput) (tool.Result, error) {
 	if in.EventID == "" || in.Substring == "" {
 		return tool.ErrorResult(fmt.Errorf("event_id and substring: %w", domain.ErrInvalidInput)), nil
 	}
@@ -518,7 +556,7 @@ func (h *handler) addHighlight(ctx context.Context, in graphInput) (tool.Result,
 	return jsonResult(hl)
 }
 
-func (h *handler) listHighlights(ctx context.Context, in graphInput) (tool.Result, error) {
+func (h *handler) listHighlights(ctx context.Context, in *graphInput) (tool.Result, error) {
 	if in.EventID == "" {
 		return tool.ErrorResult(fmt.Errorf("event_id: %w", domain.ErrInvalidInput)), nil
 	}
@@ -529,7 +567,7 @@ func (h *handler) listHighlights(ctx context.Context, in graphInput) (tool.Resul
 	return jsonResult(hs)
 }
 
-func (h *handler) registerService(ctx context.Context, in graphInput) (tool.Result, error) {
+func (h *handler) registerService(ctx context.Context, in *graphInput) (tool.Result, error) {
 	if in.Name == "" {
 		return tool.ErrorResult(fmt.Errorf("name: %w", domain.ErrInvalidInput)), nil
 	}
@@ -548,7 +586,7 @@ func (h *handler) listServices(ctx context.Context) (tool.Result, error) {
 	return jsonResult(svcs)
 }
 
-func (h *handler) registerCodebase(ctx context.Context, in graphInput) (tool.Result, error) {
+func (h *handler) registerCodebase(ctx context.Context, in *graphInput) (tool.Result, error) {
 	if in.Name == "" {
 		return tool.ErrorResult(fmt.Errorf("name: %w", domain.ErrInvalidInput)), nil
 	}
@@ -567,7 +605,7 @@ func (h *handler) listCodebases(ctx context.Context) (tool.Result, error) {
 	return jsonResult(cbs)
 }
 
-func (h *handler) mergeInstance(ctx context.Context, in graphInput) (tool.Result, error) {
+func (h *handler) mergeInstance(ctx context.Context, in *graphInput) (tool.Result, error) {
 	if in.InstanceID == "" {
 		return tool.ErrorResult(fmt.Errorf("instance_id: %w", domain.ErrInstanceRequired)), nil
 	}
@@ -594,7 +632,7 @@ func (h *handler) mergeInstance(ctx context.Context, in graphInput) (tool.Result
 	return jsonResult(map[string]any{"instance_id": in.InstanceID, "events": len(events), "edges_created": edgeCount})
 }
 
-func (h *handler) collapseInstance(ctx context.Context, in graphInput) (tool.Result, error) {
+func (h *handler) collapseInstance(ctx context.Context, in *graphInput) (tool.Result, error) {
 	if in.InstanceID == "" {
 		return tool.ErrorResult(fmt.Errorf("instance_id: %w", domain.ErrInstanceRequired)), nil
 	}
@@ -606,7 +644,7 @@ func (h *handler) collapseInstance(ctx context.Context, in graphInput) (tool.Res
 	return jsonResult(templates)
 }
 
-func (h *handler) purgeInstance(ctx context.Context, in graphInput) (tool.Result, error) {
+func (h *handler) purgeInstance(ctx context.Context, in *graphInput) (tool.Result, error) {
 	if in.InstanceID == "" {
 		return tool.ErrorResult(fmt.Errorf("instance_id: %w", domain.ErrInstanceRequired)), nil
 	}
@@ -634,12 +672,18 @@ func (h *handler) purgeInstance(ctx context.Context, in graphInput) (tool.Result
 // --- query tool ---
 
 type queryInput struct {
-	Action     string `json:"action"`
-	InstanceID string `json:"instance_id,omitempty"`
-	EventID    string `json:"event_id,omitempty"`
-	Query      string `json:"query,omitempty"`
-	Limit      int    `json:"limit,omitempty"`
-	Window     int    `json:"window,omitempty"`
+	Action        string `json:"action"`
+	InstanceID    string `json:"instance_id,omitempty"`
+	SessionID     string `json:"session_id,omitempty"`
+	EnvironmentID string `json:"environment_id,omitempty"`
+	EventID       string `json:"event_id,omitempty"`
+	Query         string `json:"query,omitempty"`
+	Key           string `json:"key,omitempty"`
+	Value         string `json:"value,omitempty"`
+	Pattern       string `json:"pattern,omitempty"`
+	Label         string `json:"label,omitempty"`
+	Limit         int    `json:"limit,omitempty"`
+	Window        int    `json:"window,omitempty"`
 }
 
 func (h *handler) handleQuery(ctx context.Context, raw json.RawMessage) (tool.Result, error) {
@@ -673,6 +717,8 @@ func (h *handler) handleQuery(ctx context.Context, raw json.RawMessage) (tool.Re
 		return h.traceCode(ctx, in, port.Outgoing)
 	case "trace_from_code":
 		return h.traceCode(ctx, in, port.Incoming)
+	case "search_by_label", "search_by_bookmark", "suspects", "time_of_defect", "recurrence":
+		return jsonResult(map[string]any{"status": "stub"})
 	default:
 		return tool.ErrorResult(fmt.Errorf("query action %q: %w", in.Action, domain.ErrUnknownAction)), nil
 	}
@@ -757,13 +803,15 @@ func (h *handler) traceCode(ctx context.Context, in queryInput, dir port.Directi
 // --- diff tool ---
 
 type diffInput struct {
-	Action       string `json:"action"`
-	InstanceA    string `json:"instance_a,omitempty"`
-	InstanceB    string `json:"instance_b,omitempty"`
-	SessionID    string `json:"session_id,omitempty"`
-	EnvironmentA string `json:"environment_a,omitempty"`
-	EnvironmentB string `json:"environment_b,omitempty"`
-	Limit        int    `json:"limit,omitempty"`
+	Action            string `json:"action"`
+	InstanceA         string `json:"instance_a,omitempty"`
+	InstanceB         string `json:"instance_b,omitempty"`
+	SessionID         string `json:"session_id,omitempty"`
+	BaselineSessionID string `json:"baseline_session_id,omitempty"`
+	EnvironmentA      string `json:"environment_a,omitempty"`
+	EnvironmentB      string `json:"environment_b,omitempty"`
+	Limit             int    `json:"limit,omitempty"`
+	Threshold         int    `json:"threshold,omitempty"`
 }
 
 func (h *handler) handleDiff(ctx context.Context, raw json.RawMessage) (tool.Result, error) {
@@ -779,6 +827,8 @@ func (h *handler) handleDiff(ctx context.Context, raw json.RawMessage) (tool.Res
 		return h.sessionDiff(ctx, in)
 	case "environment_diff":
 		return h.environmentDiff(ctx, in)
+	case "regression_check", "set_baseline":
+		return jsonResult(map[string]any{"status": "stub"})
 	default:
 		return tool.ErrorResult(fmt.Errorf("diff action %q: %w", in.Action, domain.ErrUnknownAction)), nil
 	}
