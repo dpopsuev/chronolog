@@ -9,5 +9,6 @@ type Store interface {
 	RegistryStore
 	BucketStore
 	MetaStore
+	CaseStore
 	Close() error
 }

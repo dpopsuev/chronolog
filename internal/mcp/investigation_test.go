@@ -204,23 +204,72 @@ func TestForensicInvestigationWorkflow(t *testing.T) { //nolint:funlen // e2e in
 	})
 
 	// ---- Phase 5: Buckets ----
+	var bucketID string
 	t.Run("create_bucket", func(t *testing.T) {
-		call(t, h.handleChronolog, map[string]any{
+		res := call(t, h.handleChronolog, map[string]any{
 			"action": "create_bucket", "name": "clock-issues", "query": "CLOCK_UNSYNC",
 		})
+		bucketID = extractID(t, res)
+		if bucketID == "" {
+			t.Fatal("expected non-empty bucket ID")
+		}
 	})
 
 	t.Run("list_buckets", func(t *testing.T) {
-		call(t, h.handleChronolog, map[string]any{
+		res := call(t, h.handleChronolog, map[string]any{
 			"action": "list_buckets",
 		})
+		buckets := extractArray(t, res)
+		if len(buckets) != 1 {
+			t.Fatalf("expected 1 bucket, got %d", len(buckets))
+		}
 	})
 
 	// ---- Phase 6: Case lifecycle ----
+	var caseID string
 	t.Run("open_case", func(t *testing.T) {
-		call(t, h.handleChronolog, map[string]any{
+		res := call(t, h.handleCase, map[string]any{
 			"action": "open_case", "title": "Clock sync regression",
 		})
+		caseID = extractID(t, res)
+	})
+
+	t.Run("add_symptom", func(t *testing.T) {
+		call(t, h.handleCase, map[string]any{
+			"action": "add_symptom", "case_id": caseID, "description": "CLOCK_UNSYNC errors in syslog", "event_id": defectEventID,
+		})
+	})
+
+	t.Run("append_transcript", func(t *testing.T) {
+		call(t, h.handleCase, map[string]any{
+			"action": "append_transcript", "case_id": caseID, "content": "Ran suspects — syslog correlates",
+		})
+	})
+
+	t.Run("set_root_cause", func(t *testing.T) {
+		call(t, h.handleCase, map[string]any{
+			"action": "set_root_cause", "case_id": caseID, "description": "Clock sync refactor removed mutex", "event_id": defectEventID,
+		})
+	})
+
+	t.Run("close_case", func(t *testing.T) {
+		res := call(t, h.handleCase, map[string]any{
+			"action": "close_case", "case_id": caseID,
+		})
+		text := resultText(t, res)
+		if !strings.Contains(text, "closed") {
+			t.Fatalf("expected closed status, got %s", text)
+		}
+	})
+
+	t.Run("get_case", func(t *testing.T) {
+		res := call(t, h.handleCase, map[string]any{
+			"action": "get_case", "case_id": caseID,
+		})
+		text := resultText(t, res)
+		if !strings.Contains(text, "CLOCK_UNSYNC") || !strings.Contains(text, "Clock sync refactor") {
+			t.Fatalf("expected full case with symptoms and root cause, got %s", text)
+		}
 	})
 
 	// ---- Phase 7: Immutability ----

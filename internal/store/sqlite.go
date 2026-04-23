@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -86,6 +87,25 @@ CREATE TABLE IF NOT EXISTS buckets (
 );
 CREATE TABLE IF NOT EXISTS aliases (
 	alias TEXT PRIMARY KEY, id TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS cases (
+	id TEXT PRIMARY KEY, title TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open',
+	created_at TEXT NOT NULL, closed_at TEXT DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS symptoms (
+	id TEXT PRIMARY KEY, case_id TEXT NOT NULL, description TEXT NOT NULL,
+	event_id TEXT DEFAULT '', created_at TEXT NOT NULL,
+	FOREIGN KEY (case_id) REFERENCES cases(id)
+);
+CREATE TABLE IF NOT EXISTS root_causes (
+	id TEXT PRIMARY KEY, case_id TEXT NOT NULL UNIQUE, description TEXT NOT NULL,
+	event_id TEXT DEFAULT '', created_at TEXT NOT NULL,
+	FOREIGN KEY (case_id) REFERENCES cases(id)
+);
+CREATE TABLE IF NOT EXISTS transcript_entries (
+	id TEXT PRIMARY KEY, case_id TEXT NOT NULL, seq INTEGER NOT NULL,
+	content TEXT NOT NULL, created_at TEXT NOT NULL,
+	FOREIGN KEY (case_id) REFERENCES cases(id)
 );
 CREATE TABLE IF NOT EXISTS schema_version (
 	version INTEGER NOT NULL
@@ -688,4 +708,134 @@ func (s *SQLiteStore) SchemaVersion(ctx context.Context) (int, error) {
 func (s *SQLiteStore) SetSchemaVersion(ctx context.Context, version int) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE schema_version SET version = ?`, version)
 	return err
+}
+
+// --- CaseStore ---
+
+func (s *SQLiteStore) PutCase(ctx context.Context, c *domain.Case) error {
+	closedAt := ""
+	if c.ClosedAt != nil {
+		closedAt = c.ClosedAt.Format(time.RFC3339Nano)
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT OR REPLACE INTO cases (id, title, status, created_at, closed_at) VALUES (?, ?, ?, ?, ?)`,
+		c.ID, c.Title, c.Status, c.CreatedAt.Format(time.RFC3339Nano), closedAt)
+	return err
+}
+
+func (s *SQLiteStore) GetCase(ctx context.Context, id string) (*domain.Case, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT id, title, status, created_at, closed_at FROM cases WHERE id = ?`, id)
+	var c domain.Case
+	var createdAt, closedAt string
+	if err := row.Scan(&c.ID, &c.Title, &c.Status, &createdAt, &closedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, domain.ErrNotFound
+		}
+		return nil, err
+	}
+	c.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
+	if closedAt != "" {
+		t, _ := time.Parse(time.RFC3339Nano, closedAt)
+		c.ClosedAt = &t
+	}
+	return &c, nil
+}
+
+func (s *SQLiteStore) ListCases(ctx context.Context) ([]*domain.Case, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, title, status, created_at, closed_at FROM cases ORDER BY created_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []*domain.Case
+	for rows.Next() {
+		var c domain.Case
+		var createdAt, closedAt string
+		if err := rows.Scan(&c.ID, &c.Title, &c.Status, &createdAt, &closedAt); err != nil {
+			return nil, err
+		}
+		c.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
+		if closedAt != "" {
+			t, _ := time.Parse(time.RFC3339Nano, closedAt)
+			c.ClosedAt = &t
+		}
+		result = append(result, &c)
+	}
+	return result, rows.Err()
+}
+
+func (s *SQLiteStore) PutSymptom(ctx context.Context, sym *domain.Symptom) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO symptoms (id, case_id, description, event_id, created_at) VALUES (?, ?, ?, ?, ?)`,
+		sym.ID, sym.CaseID, sym.Description, sym.EventID, sym.CreatedAt.Format(time.RFC3339Nano))
+	return err
+}
+
+func (s *SQLiteStore) ListSymptoms(ctx context.Context, caseID string) ([]*domain.Symptom, error) { //nolint:dupl // distinct types scanned
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, case_id, description, event_id, created_at FROM symptoms WHERE case_id = ? ORDER BY created_at`, caseID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []*domain.Symptom
+	for rows.Next() {
+		var sym domain.Symptom
+		var createdAt string
+		if err := rows.Scan(&sym.ID, &sym.CaseID, &sym.Description, &sym.EventID, &createdAt); err != nil {
+			return nil, err
+		}
+		sym.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
+		result = append(result, &sym)
+	}
+	return result, rows.Err()
+}
+
+func (s *SQLiteStore) PutRootCause(ctx context.Context, rc *domain.RootCause) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT OR REPLACE INTO root_causes (id, case_id, description, event_id, created_at) VALUES (?, ?, ?, ?, ?)`,
+		rc.ID, rc.CaseID, rc.Description, rc.EventID, rc.CreatedAt.Format(time.RFC3339Nano))
+	return err
+}
+
+func (s *SQLiteStore) GetRootCause(ctx context.Context, caseID string) (*domain.RootCause, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT id, case_id, description, event_id, created_at FROM root_causes WHERE case_id = ?`, caseID)
+	var rc domain.RootCause
+	var createdAt string
+	if err := row.Scan(&rc.ID, &rc.CaseID, &rc.Description, &rc.EventID, &createdAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, domain.ErrNotFound
+		}
+		return nil, err
+	}
+	rc.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
+	return &rc, nil
+}
+
+func (s *SQLiteStore) PutTranscriptEntry(ctx context.Context, te *domain.TranscriptEntry) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO transcript_entries (id, case_id, seq, content, created_at) VALUES (?, ?, ?, ?, ?)`,
+		te.ID, te.CaseID, te.Seq, te.Content, te.CreatedAt.Format(time.RFC3339Nano))
+	return err
+}
+
+func (s *SQLiteStore) ListTranscriptEntries(ctx context.Context, caseID string) ([]*domain.TranscriptEntry, error) { //nolint:dupl // distinct types scanned
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, case_id, seq, content, created_at FROM transcript_entries WHERE case_id = ? ORDER BY seq`, caseID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []*domain.TranscriptEntry
+	for rows.Next() {
+		var te domain.TranscriptEntry
+		var createdAt string
+		if err := rows.Scan(&te.ID, &te.CaseID, &te.Seq, &te.Content, &createdAt); err != nil {
+			return nil, err
+		}
+		te.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
+		result = append(result, &te)
+	}
+	return result, rows.Err()
 }

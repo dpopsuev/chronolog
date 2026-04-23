@@ -242,6 +242,18 @@ func NewServer(s port.Store, version string) *batterymcp.Server {
 		InputSchema: projectionSchema,
 	}, h.handleProjection)
 
+	bsrv.Tool(server.ToolMeta{
+		Name: "case",
+		Description: "Investigation lifecycle — open, track, and close forensic cases. " +
+			"Actions: open_case (title), close_case (case_id), list_cases, get_case (case_id — full case with symptoms/root_cause/transcript), " +
+			"add_symptom (case_id, description, event_id), list_symptoms (case_id), " +
+			"set_root_cause (case_id, description, event_id — link to smoking gun), get_root_cause (case_id), " +
+			"append_transcript (case_id, content), get_transcript (case_id).",
+		Keywords:    []string{"case", "investigation", "symptom", "root_cause", "transcript", "rca"},
+		Categories:  []string{"investigation"},
+		InputSchema: caseSchema,
+	}, h.handleCase)
+
 	return bsrv
 }
 
@@ -338,11 +350,30 @@ func (h *handler) handleChronolog(ctx context.Context, raw json.RawMessage) (too
 			return tool.ErrorResult(err), nil
 		}
 		return jsonResult(ps)
-	case "create_bucket", "list_buckets", "get_bucket", "delete_bucket":
-		return jsonResult(map[string]any{"status": "stub"})
+	case "create_bucket":
+		b := &domain.Bucket{ID: uuid.NewString(), Name: in.Name, Description: in.Description, Query: in.Query}
+		if err := h.store.PutBucket(ctx, b); err != nil {
+			return tool.ErrorResult(err), nil
+		}
+		return jsonResult(b)
+	case "list_buckets":
+		bs, err := h.store.ListBuckets(ctx)
+		if err != nil {
+			return tool.ErrorResult(err), nil
+		}
+		return jsonResult(bs)
+	case "get_bucket":
+		b, err := h.store.GetBucket(ctx, in.BucketID)
+		if err != nil {
+			return tool.ErrorResult(err), nil
+		}
+		return jsonResult(b)
+	case "delete_bucket":
+		if err := h.store.DeleteBucket(ctx, in.BucketID); err != nil {
+			return tool.ErrorResult(err), nil
+		}
+		return jsonResult(map[string]any{"deleted": true})
 	case "set_immutable", "verify_integrity":
-		return jsonResult(map[string]any{"status": "stub"})
-	case "open_case":
 		return jsonResult(map[string]any{"status": "stub"})
 	default:
 		return tool.ErrorResult(fmt.Errorf("chronolog action %q: %w", in.Action, domain.ErrUnknownAction)), nil

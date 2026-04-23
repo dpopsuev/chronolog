@@ -29,6 +29,10 @@ type MemStore struct {
 	buckets       map[string]*domain.Bucket
 	edges         []domain.Edge
 	aliases       map[string]string
+	cases         map[string]*domain.Case
+	symptoms      map[string]*domain.Symptom
+	rootCauses    map[string]*domain.RootCause
+	transcripts   map[string]*domain.TranscriptEntry
 	schemaVersion int
 }
 
@@ -47,6 +51,10 @@ func NewMemStore() *MemStore {
 		codebases:     make(map[string]*domain.Codebase),
 		buckets:       make(map[string]*domain.Bucket),
 		aliases:       make(map[string]string),
+		cases:         make(map[string]*domain.Case),
+		symptoms:      make(map[string]*domain.Symptom),
+		rootCauses:    make(map[string]*domain.RootCause),
+		transcripts:   make(map[string]*domain.TranscriptEntry),
 		schemaVersion: 1,
 	}
 }
@@ -484,4 +492,90 @@ func (m *MemStore) SetSchemaVersion(_ context.Context, version int) error {
 	defer m.mu.Unlock()
 	m.schemaVersion = version
 	return nil
+}
+
+// --- CaseStore ---
+
+func (m *MemStore) PutCase(_ context.Context, c *domain.Case) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cases[c.ID] = c
+	return nil
+}
+
+func (m *MemStore) GetCase(_ context.Context, id string) (*domain.Case, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	c, ok := m.cases[id]
+	if !ok {
+		return nil, domain.ErrNotFound
+	}
+	return c, nil
+}
+
+func (m *MemStore) ListCases(_ context.Context) ([]*domain.Case, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	result := make([]*domain.Case, 0, len(m.cases))
+	for _, c := range m.cases {
+		result = append(result, c)
+	}
+	return result, nil
+}
+
+func (m *MemStore) PutSymptom(_ context.Context, s *domain.Symptom) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.symptoms[s.ID] = s
+	return nil
+}
+
+func (m *MemStore) ListSymptoms(_ context.Context, caseID string) ([]*domain.Symptom, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var result []*domain.Symptom
+	for _, s := range m.symptoms {
+		if s.CaseID == caseID {
+			result = append(result, s)
+		}
+	}
+	return result, nil
+}
+
+func (m *MemStore) PutRootCause(_ context.Context, rc *domain.RootCause) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.rootCauses[rc.ID] = rc
+	return nil
+}
+
+func (m *MemStore) GetRootCause(_ context.Context, caseID string) (*domain.RootCause, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, rc := range m.rootCauses {
+		if rc.CaseID == caseID {
+			return rc, nil
+		}
+	}
+	return nil, domain.ErrNotFound
+}
+
+func (m *MemStore) PutTranscriptEntry(_ context.Context, te *domain.TranscriptEntry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.transcripts[te.ID] = te
+	return nil
+}
+
+func (m *MemStore) ListTranscriptEntries(_ context.Context, caseID string) ([]*domain.TranscriptEntry, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var result []*domain.TranscriptEntry
+	for _, te := range m.transcripts {
+		if te.CaseID == caseID {
+			result = append(result, te)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Seq < result[j].Seq })
+	return result, nil
 }
