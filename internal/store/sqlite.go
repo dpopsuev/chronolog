@@ -104,7 +104,8 @@ CREATE TABLE IF NOT EXISTS root_causes (
 );
 CREATE TABLE IF NOT EXISTS transcript_entries (
 	id TEXT PRIMARY KEY, case_id TEXT NOT NULL, seq INTEGER NOT NULL,
-	content TEXT NOT NULL, created_at TEXT NOT NULL,
+	content TEXT NOT NULL, tool TEXT DEFAULT '', action TEXT DEFAULT '',
+	params TEXT DEFAULT '', result_hash TEXT DEFAULT '', created_at TEXT NOT NULL,
 	FOREIGN KEY (case_id) REFERENCES cases(id)
 );
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -815,14 +816,14 @@ func (s *SQLiteStore) GetRootCause(ctx context.Context, caseID string) (*domain.
 
 func (s *SQLiteStore) PutTranscriptEntry(ctx context.Context, te *domain.TranscriptEntry) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO transcript_entries (id, case_id, seq, content, created_at) VALUES (?, ?, ?, ?, ?)`,
-		te.ID, te.CaseID, te.Seq, te.Content, te.CreatedAt.Format(time.RFC3339Nano))
+		`INSERT INTO transcript_entries (id, case_id, seq, content, tool, action, params, result_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		te.ID, te.CaseID, te.Seq, te.Content, te.Tool, te.Action, te.Params, te.ResultHash, te.CreatedAt.Format(time.RFC3339Nano))
 	return err
 }
 
-func (s *SQLiteStore) ListTranscriptEntries(ctx context.Context, caseID string) ([]*domain.TranscriptEntry, error) { //nolint:dupl // distinct types scanned
+func (s *SQLiteStore) ListTranscriptEntries(ctx context.Context, caseID string) ([]*domain.TranscriptEntry, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, case_id, seq, content, created_at FROM transcript_entries WHERE case_id = ? ORDER BY seq`, caseID)
+		`SELECT id, case_id, seq, content, tool, action, params, result_hash, created_at FROM transcript_entries WHERE case_id = ? ORDER BY seq`, caseID)
 	if err != nil {
 		return nil, err
 	}
@@ -831,7 +832,7 @@ func (s *SQLiteStore) ListTranscriptEntries(ctx context.Context, caseID string) 
 	for rows.Next() {
 		var te domain.TranscriptEntry
 		var createdAt string
-		if err := rows.Scan(&te.ID, &te.CaseID, &te.Seq, &te.Content, &createdAt); err != nil {
+		if err := rows.Scan(&te.ID, &te.CaseID, &te.Seq, &te.Content, &te.Tool, &te.Action, &te.Params, &te.ResultHash, &createdAt); err != nil {
 			return nil, err
 		}
 		te.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)

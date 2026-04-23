@@ -31,9 +31,13 @@ type RootCause struct {
 
 // TranscriptEntry is one step in the investigation audit trail.
 type TranscriptEntry struct {
-	ID        string    `json:"id"`
-	CaseID    string    `json:"case_id"`
-	Seq       int       `json:"seq"`
-	Content   string    `json:"content"`
-	CreatedAt time.Time `json:"created_at"`
+	ID         string    `json:"id"`
+	CaseID     string    `json:"case_id"`
+	Seq        int       `json:"seq"`
+	Content    string    `json:"content"`
+	Tool       string    `json:"tool,omitempty"`
+	Action     string    `json:"action,omitempty"`
+	Params     string    `json:"params,omitempty"`
+	ResultHash string    `json:"result_hash,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
 }

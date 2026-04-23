@@ -7,7 +7,7 @@ import (
 	"github.com/dpopsuev/chronolog/internal/store"
 )
 
-func TestForensicInvestigationWorkflow(t *testing.T) { //nolint:funlen // e2e integration test spanning full forensic pipeline
+func TestForensicInvestigationWorkflow(t *testing.T) { //nolint:funlen,gocyclo // e2e integration test spanning full forensic pipeline
 	s := store.NewMemStore()
 	h := &handler{store: s}
 
@@ -244,6 +244,27 @@ func TestForensicInvestigationWorkflow(t *testing.T) { //nolint:funlen // e2e in
 		call(t, h.handleCase, map[string]any{
 			"action": "append_transcript", "case_id": caseID, "content": "Ran suspects — syslog correlates",
 		})
+	})
+
+	t.Run("append_replayable_transcript", func(t *testing.T) {
+		call(t, h.handleCase, map[string]any{
+			"action":      "append_transcript",
+			"case_id":     caseID,
+			"content":     "Ran time_of_defect on CLOCK_UNSYNC",
+			"tool":        "query",
+			"tool_action": "time_of_defect",
+			"params":      `{"action":"time_of_defect","pattern":"CLOCK_UNSYNC","instance_id":"` + inst2ID + `"}`,
+		})
+	})
+
+	t.Run("replay_transcript", func(t *testing.T) {
+		res := call(t, h.handleCase, map[string]any{
+			"action": "replay_transcript", "case_id": caseID,
+		})
+		text := resultText(t, res)
+		if !strings.Contains(text, "reproducible") {
+			t.Fatalf("expected reproducible field, got %s", text)
+		}
 	})
 
 	t.Run("set_root_cause", func(t *testing.T) {

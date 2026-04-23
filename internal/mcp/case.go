@@ -22,18 +22,26 @@ type caseInput struct {
 	EventID     string `json:"event_id,omitempty"`
 	Content     string `json:"content,omitempty"`
 	Verdict     string `json:"verdict,omitempty"`
+	Tool        string `json:"tool,omitempty"`
+	ToolAction  string `json:"tool_action,omitempty"`
+	Params      string `json:"params,omitempty"`
+	ResultHash  string `json:"result_hash,omitempty"`
 }
 
 var caseSchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
-		"action": {"type": "string", "enum": ["open_case", "close_case", "list_cases", "get_case", "add_symptom", "list_symptoms", "set_root_cause", "get_root_cause", "append_transcript", "get_transcript"], "description": "Case lifecycle action"},
+		"action": {"type": "string", "enum": ["open_case", "close_case", "list_cases", "get_case", "add_symptom", "list_symptoms", "set_root_cause", "get_root_cause", "append_transcript", "get_transcript", "replay_transcript"], "description": "Case lifecycle action"},
 		"case_id": {"type": "string", "description": "Case UUID"},
 		"title": {"type": "string", "description": "Case title (for open_case)"},
 		"description": {"type": "string", "description": "Symptom description or root cause description"},
 		"event_id": {"type": "string", "description": "Evidence event UUID (for add_symptom/set_root_cause)"},
 		"content": {"type": "string", "description": "Transcript entry content"},
-		"verdict": {"type": "string", "description": "Case verdict (for close_case)"}
+		"verdict": {"type": "string", "description": "Case verdict (for close_case)"},
+		"tool": {"type": "string", "description": "Tool name for replayable transcript entry"},
+		"tool_action": {"type": "string", "description": "Action name for replayable transcript entry"},
+		"params": {"type": "string", "description": "JSON-encoded params for replayable transcript entry"},
+		"result_hash": {"type": "string", "description": "SHA256 hash of the result for replay verification"}
 	},
 	"required": ["action"]
 }`)
@@ -81,6 +89,8 @@ func (h *handler) handleCase(ctx context.Context, raw json.RawMessage) (tool.Res
 			return tool.ErrorResult(err), nil
 		}
 		return jsonResult(entries)
+	case "replay_transcript":
+		return h.replayTranscript(ctx, in)
 	default:
 		return tool.ErrorResult(fmt.Errorf("case action %q: %w", in.Action, domain.ErrUnknownAction)), nil
 	}
@@ -167,14 +177,71 @@ func (h *handler) appendTranscript(ctx context.Context, in caseInput) (tool.Resu
 		return tool.ErrorResult(err), nil
 	}
 	te := &domain.TranscriptEntry{
-		ID:        uuid.NewString(),
-		CaseID:    in.CaseID,
-		Seq:       len(entries) + 1,
-		Content:   in.Content,
-		CreatedAt: time.Now().UTC(),
+		ID:         uuid.NewString(),
+		CaseID:     in.CaseID,
+		Seq:        len(entries) + 1,
+		Content:    in.Content,
+		Tool:       in.Tool,
+		Action:     in.ToolAction,
+		Params:     in.Params,
+		ResultHash: in.ResultHash,
+		CreatedAt:  time.Now().UTC(),
 	}
 	if err := h.store.PutTranscriptEntry(ctx, te); err != nil {
 		return tool.ErrorResult(err), nil
 	}
 	return jsonResult(te)
+}
+
+func (h *handler) replayTranscript(ctx context.Context, in caseInput) (tool.Result, error) {
+	if in.CaseID == "" {
+		return tool.ErrorResult(fmt.Errorf("case_id: %w", domain.ErrInvalidInput)), nil
+	}
+	entries, err := h.store.ListTranscriptEntries(ctx, in.CaseID)
+	if err != nil {
+		return tool.ErrorResult(err), nil
+	}
+	type replayResult struct {
+		Seq        int    `json:"seq"`
+		Tool       string `json:"tool"`
+		Action     string `json:"action"`
+		Match      bool   `json:"match"`
+		StoredHash string `json:"stored_hash"`
+		ReplayHash string `json:"replay_hash,omitempty"`
+	}
+	results := make([]replayResult, 0, len(entries))
+	allMatch := true
+	for _, te := range entries {
+		if te.Tool == "" || te.Params == "" {
+			continue
+		}
+		var params map[string]any
+		if jErr := json.Unmarshal([]byte(te.Params), &params); jErr != nil {
+			continue
+		}
+		var res tool.Result
+		raw, _ := json.Marshal(params)
+		switch te.Tool {
+		case "query":
+			res, _ = h.handleQuery(ctx, raw)
+		case "graph":
+			res, _ = h.handleGraph(ctx, raw)
+		case "diff":
+			res, _ = h.handleDiff(ctx, raw)
+		case "case":
+			res, _ = h.handleCase(ctx, raw)
+		default:
+			continue
+		}
+		replayHash := hashLine("replay", res.Text())
+		match := te.ResultHash == "" || te.ResultHash == replayHash
+		if !match {
+			allMatch = false
+		}
+		results = append(results, replayResult{
+			Seq: te.Seq, Tool: te.Tool, Action: te.Action,
+			Match: match, StoredHash: te.ResultHash, ReplayHash: replayHash,
+		})
+	}
+	return jsonResult(map[string]any{"reproducible": allMatch, "entries": len(results), "results": results})
 }
