@@ -279,7 +279,7 @@ type chronologInput struct {
 	Query         string `json:"query,omitempty"`
 }
 
-func (h *handler) handleChronolog(ctx context.Context, raw json.RawMessage) (tool.Result, error) {
+func (h *handler) handleChronolog(ctx context.Context, raw json.RawMessage) (tool.Result, error) { //nolint:gocyclo,funlen // action dispatch switch
 	var in chronologInput
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return tool.ErrorResult(err), nil
@@ -558,7 +558,7 @@ type graphInput struct {
 	Before      string `json:"before,omitempty"`
 }
 
-func (h *handler) handleGraph(ctx context.Context, raw json.RawMessage) (tool.Result, error) {
+func (h *handler) handleGraph(ctx context.Context, raw json.RawMessage) (tool.Result, error) { //nolint:gocyclo // action dispatch switch
 	var in graphInput
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return tool.ErrorResult(err), nil
