@@ -318,8 +318,24 @@ func (h *handler) handleChronolog(ctx context.Context, raw json.RawMessage) (too
 			return tool.ErrorResult(err), nil
 		}
 		return jsonResult(is)
-	case "create_phase", "list_phases":
-		return jsonResult(map[string]any{"status": "stub"})
+	case "create_phase":
+		if in.InstanceID == "" {
+			return tool.ErrorResult(fmt.Errorf("instance_id: %w", domain.ErrInstanceRequired)), nil
+		}
+		p := &domain.Phase{ID: uuid.NewString(), InstanceID: in.InstanceID, Name: in.Name, Label: in.Label, StartedAt: time.Now().UTC()}
+		if err := h.store.PutPhase(ctx, p); err != nil {
+			return tool.ErrorResult(err), nil
+		}
+		return jsonResult(p)
+	case "list_phases":
+		if in.InstanceID == "" {
+			return tool.ErrorResult(fmt.Errorf("instance_id: %w", domain.ErrInstanceRequired)), nil
+		}
+		ps, err := h.store.ListPhases(ctx, in.InstanceID)
+		if err != nil {
+			return tool.ErrorResult(err), nil
+		}
+		return jsonResult(ps)
 	case "create_bucket", "list_buckets", "get_bucket", "delete_bucket":
 		return jsonResult(map[string]any{"status": "stub"})
 	case "set_immutable", "verify_integrity":

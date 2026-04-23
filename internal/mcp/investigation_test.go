@@ -89,15 +89,23 @@ func TestForensicInvestigationWorkflow(t *testing.T) { //nolint:funlen // e2e in
 
 	// ---- Phase 1: Phases ----
 	t.Run("create_phase", func(t *testing.T) {
-		call(t, h.handleChronolog, map[string]any{
+		res := call(t, h.handleChronolog, map[string]any{
 			"action": "create_phase", "instance_id": inst2ID, "name": "during_test",
 		})
+		phaseID := extractID(t, res)
+		if phaseID == "" {
+			t.Fatal("expected non-empty phase ID")
+		}
 	})
 
 	t.Run("list_phases", func(t *testing.T) {
-		call(t, h.handleChronolog, map[string]any{
+		res := call(t, h.handleChronolog, map[string]any{
 			"action": "list_phases", "instance_id": inst2ID,
 		})
+		phases := extractArray(t, res)
+		if len(phases) != 1 {
+			t.Fatalf("expected 1 phase, got %d", len(phases))
+		}
 	})
 
 	// ---- Phase 2: Labels ----
