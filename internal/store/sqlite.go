@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE TABLE IF NOT EXISTS instances (
 	id TEXT PRIMARY KEY, session_id TEXT NOT NULL, name TEXT NOT NULL,
 	alias TEXT DEFAULT '', source_pattern TEXT DEFAULT '',
+	immutable INTEGER DEFAULT 0,
 	started_at TEXT NOT NULL, ended_at TEXT DEFAULT '',
 	FOREIGN KEY (session_id) REFERENCES sessions(id)
 );
@@ -54,7 +55,9 @@ CREATE TABLE IF NOT EXISTS events (
 	time_confidence TEXT NOT NULL DEFAULT 'unknown',
 	message TEXT NOT NULL, source TEXT DEFAULT '',
 	source_hash TEXT DEFAULT '', line_number INTEGER DEFAULT 0,
-	raw_line TEXT NOT NULL, labels TEXT DEFAULT '{}', created_at TEXT NOT NULL,
+	raw_line TEXT NOT NULL, labels TEXT DEFAULT '{}',
+	collector TEXT DEFAULT '', file_hash TEXT DEFAULT '',
+	created_at TEXT NOT NULL,
 	FOREIGN KEY (instance_id) REFERENCES instances(id)
 );
 CREATE INDEX IF NOT EXISTS idx_events_instance ON events(instance_id, timestamp);
@@ -185,9 +188,9 @@ func parseTimePtr(s string) *time.Time {
 func (s *SQLiteStore) PutEvent(ctx context.Context, e *domain.Event) error {
 	labelsJSON, _ := json.Marshal(e.Labels)
 	_, err := s.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO events (id, instance_id, timestamp, time_confidence, message, source, source_hash, line_number, raw_line, labels, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		e.ID, e.InstanceID, fmtTime(e.Timestamp), e.TimeConfidence, e.Message, e.Source, e.SourceHash, e.LineNumber, e.RawLine, string(labelsJSON), fmtTime(e.CreatedAt))
+		`INSERT OR IGNORE INTO events (id, instance_id, timestamp, time_confidence, message, source, source_hash, line_number, raw_line, labels, collector, file_hash, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		e.ID, e.InstanceID, fmtTime(e.Timestamp), e.TimeConfidence, e.Message, e.Source, e.SourceHash, e.LineNumber, e.RawLine, string(labelsJSON), e.Collector, e.FileHash, fmtTime(e.CreatedAt))
 	if err != nil {
 		return fmt.Errorf("put event: %w", err)
 	}
@@ -199,12 +202,12 @@ func (s *SQLiteStore) PutEvent(ctx context.Context, e *domain.Event) error {
 
 func (s *SQLiteStore) GetEvent(ctx context.Context, id string) (*domain.Event, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, instance_id, timestamp, time_confidence, message, source, source_hash, line_number, raw_line, labels, created_at FROM events WHERE id = ?`, id)
+		`SELECT id, instance_id, timestamp, time_confidence, message, source, source_hash, line_number, raw_line, labels, collector, file_hash, created_at FROM events WHERE id = ?`, id)
 	return scanEvent(row)
 }
 
 func (s *SQLiteStore) ListEvents(ctx context.Context, instanceID string, filter port.EventFilter) ([]*domain.Event, error) {
-	q := `SELECT id, instance_id, timestamp, time_confidence, message, source, source_hash, line_number, raw_line, labels, created_at FROM events WHERE instance_id = ?`
+	q := `SELECT id, instance_id, timestamp, time_confidence, message, source, source_hash, line_number, raw_line, labels, collector, file_hash, created_at FROM events WHERE instance_id = ?`
 	args := []any{instanceID}
 	if filter.After != nil {
 		q += " AND timestamp > ?"
@@ -266,7 +269,7 @@ func (s *SQLiteStore) SearchEvents(ctx context.Context, query string, limit int)
 		limit = 100
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT e.id, e.instance_id, e.timestamp, e.time_confidence, e.message, e.source, e.source_hash, e.line_number, e.raw_line, e.labels, e.created_at
+		`SELECT e.id, e.instance_id, e.timestamp, e.time_confidence, e.message, e.source, e.source_hash, e.line_number, e.raw_line, e.labels, e.collector, e.file_hash, e.created_at
 		 FROM events e JOIN events_fts f ON e.id = f.event_id WHERE events_fts MATCH ? LIMIT ?`, query, limit)
 	if err != nil {
 		return nil, fmt.Errorf("search events: %w", err)
@@ -290,7 +293,7 @@ type scanner interface {
 func scanEvent(s scanner) (*domain.Event, error) {
 	var e domain.Event
 	var ts, createdAt, labelsJSON string
-	if err := s.Scan(&e.ID, &e.InstanceID, &ts, &e.TimeConfidence, &e.Message, &e.Source, &e.SourceHash, &e.LineNumber, &e.RawLine, &labelsJSON, &createdAt); err != nil {
+	if err := s.Scan(&e.ID, &e.InstanceID, &ts, &e.TimeConfidence, &e.Message, &e.Source, &e.SourceHash, &e.LineNumber, &e.RawLine, &labelsJSON, &e.Collector, &e.FileHash, &createdAt); err != nil {
 		return nil, err
 	}
 	e.Timestamp = parseTime(ts)
@@ -417,26 +420,32 @@ func (s *SQLiteStore) ListSessions(ctx context.Context, envID string) ([]*domain
 }
 
 func (s *SQLiteStore) PutInstance(ctx context.Context, inst *domain.Instance) error {
-	_, err := s.db.ExecContext(ctx, `INSERT OR REPLACE INTO instances (id, session_id, name, alias, source_pattern, started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		inst.ID, inst.SessionID, inst.Name, inst.Alias, inst.SourcePattern, fmtTime(inst.StartedAt), fmtTimePtr(inst.EndedAt))
+	immutable := 0
+	if inst.Immutable {
+		immutable = 1
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT OR REPLACE INTO instances (id, session_id, name, alias, source_pattern, immutable, started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		inst.ID, inst.SessionID, inst.Name, inst.Alias, inst.SourcePattern, immutable, fmtTime(inst.StartedAt), fmtTimePtr(inst.EndedAt))
 	return err
 }
 
 func (s *SQLiteStore) GetInstance(ctx context.Context, id string) (*domain.Instance, error) {
 	var inst domain.Instance
 	var startedAt, endedAt string
-	err := s.db.QueryRowContext(ctx, `SELECT id, session_id, name, alias, source_pattern, started_at, ended_at FROM instances WHERE id = ?`, id).
-		Scan(&inst.ID, &inst.SessionID, &inst.Name, &inst.Alias, &inst.SourcePattern, &startedAt, &endedAt)
+	var immutable int
+	err := s.db.QueryRowContext(ctx, `SELECT id, session_id, name, alias, source_pattern, immutable, started_at, ended_at FROM instances WHERE id = ?`, id).
+		Scan(&inst.ID, &inst.SessionID, &inst.Name, &inst.Alias, &inst.SourcePattern, &immutable, &startedAt, &endedAt)
 	if err != nil {
 		return nil, err
 	}
+	inst.Immutable = immutable != 0
 	inst.StartedAt = parseTime(startedAt)
 	inst.EndedAt = parseTimePtr(endedAt)
 	return &inst, nil
 }
 
 func (s *SQLiteStore) ListInstances(ctx context.Context, sessionID string) ([]*domain.Instance, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, session_id, name, alias, source_pattern, started_at, ended_at FROM instances WHERE session_id = ?`, sessionID)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, session_id, name, alias, source_pattern, immutable, started_at, ended_at FROM instances WHERE session_id = ?`, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -445,9 +454,11 @@ func (s *SQLiteStore) ListInstances(ctx context.Context, sessionID string) ([]*d
 	for rows.Next() {
 		var inst domain.Instance
 		var startedAt, endedAt string
-		if err := rows.Scan(&inst.ID, &inst.SessionID, &inst.Name, &inst.Alias, &inst.SourcePattern, &startedAt, &endedAt); err != nil {
+		var immutable int
+		if err := rows.Scan(&inst.ID, &inst.SessionID, &inst.Name, &inst.Alias, &inst.SourcePattern, &immutable, &startedAt, &endedAt); err != nil {
 			return nil, err
 		}
+		inst.Immutable = immutable != 0
 		inst.StartedAt = parseTime(startedAt)
 		inst.EndedAt = parseTimePtr(endedAt)
 		result = append(result, &inst)

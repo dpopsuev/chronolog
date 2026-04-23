@@ -14,6 +14,9 @@ var (
 	ErrSchemaVersionMismatch = errors.New("schema version mismatch")
 	ErrSourceNotFound        = errors.New("source not found")
 	ErrInstanceRequired      = errors.New("instance_id is required")
+	ErrGitNotConfigured      = errors.New("git runner not configured")
+	ErrNoCodeRef             = errors.New("no file:line reference in event message")
+	ErrNoCodebases           = errors.New("no codebases registered")
 )
 
 // Event is the atomic unit of the Chronolog timeline — one log line, one event.

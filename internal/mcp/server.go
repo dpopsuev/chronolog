@@ -160,7 +160,7 @@ func NewServer(s port.Store, version string) *batterymcp.Server {
 	bsrv := batterymcp.NewServer("chronolog", version).
 		WithInstructions(instructions)
 
-	h := &handler{store: s}
+	h := &handler{store: s, git: execGitRunner{}}
 
 	bsrv.Tool(server.ToolMeta{
 		Name: "chronolog",
@@ -261,6 +261,7 @@ func NewServer(s port.Store, version string) *batterymcp.Server {
 
 type handler struct {
 	store port.Store
+	git   GitRunner
 }
 
 // --- chronolog tool ---
