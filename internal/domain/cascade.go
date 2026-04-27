@@ -38,6 +38,7 @@ type Instance struct {
 	Alias         string     `json:"alias,omitempty"`
 	SourcePattern string     `json:"source_pattern,omitempty"`
 	Immutable     bool       `json:"immutable,omitempty"`
+	Maquette      *Maquette  `json:"maquette,omitempty"`
 	StartedAt     time.Time  `json:"started_at"`
 	EndedAt       *time.Time `json:"ended_at,omitempty"`
 }

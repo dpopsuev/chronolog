@@ -804,6 +804,151 @@ func TestE2E_FullPipeline(t *testing.T) { //nolint:funlen // E2E integration tes
 	}
 }
 
+func TestAddSource_WithMaquette(t *testing.T) {
+	s := store.NewMemStore()
+	h := &handler{store: s}
+	instID := extractID(t, call(t, h.handleChronolog, map[string]any{
+		"action": "create_instance", "name": "maq-test", "session_id": "test-session",
+	}))
+	call(t, h.handleIntake, map[string]any{
+		"action":      "add_source",
+		"instance_id": instID,
+		"source":      "syslog",
+		"lines": []string{
+			"Dec 20 04:57:41 helix73 systemd[1]: Starting Kubernetes",
+			"Dec 20 04:57:42 helix73 kubelet[999]: Node ready",
+		},
+		"maquette": map[string]any{
+			"timestamp": map[string]any{
+				"regex":  `^(\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2})`,
+				"format": "Jan 2 15:04:05",
+			},
+			"source": map[string]any{
+				"regex": `\w+\s+\d+\s+\d{2}:\d{2}:\d{2}\s+\S+\s+(?P<source>\S+?)[\[:]`,
+			},
+			"severity": map[string]any{
+				"keywords": map[string]any{"ERROR": "error", "WARNING": "warning"},
+			},
+		},
+	})
+	res := call(t, h.handleQuery, map[string]any{
+		"action": "timeline", "instance_id": instID,
+	})
+	events := extractArray(t, res)
+	if len(events) != 2 {
+		t.Fatalf("events = %d, want 2", len(events))
+	}
+	first := events[0].(map[string]any)
+	if first["time_confidence"] != domain.ConfidenceMaquette {
+		t.Errorf("confidence = %v, want maquette", first["time_confidence"])
+	}
+	labels := first["labels"].(map[string]any)
+	if labels[domain.LabelLogSource] != "systemd" {
+		t.Errorf("log_source = %v, want systemd", labels[domain.LabelLogSource])
+	}
+}
+
+func TestAddSource_MaquetteStoredOnInstance(t *testing.T) {
+	s := store.NewMemStore()
+	h := &handler{store: s}
+	instID := extractID(t, call(t, h.handleChronolog, map[string]any{
+		"action": "create_instance", "name": "maq-persist", "session_id": "s1",
+	}))
+	call(t, h.handleIntake, map[string]any{
+		"action": "add_source", "instance_id": instID, "source": "a.log",
+		"lines": []string{"Dec 20 04:57:41 host sshd[1]: connected"},
+		"maquette": map[string]any{
+			"timestamp": map[string]any{
+				"regex":  `^(\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2})`,
+				"format": "Jan 2 15:04:05",
+			},
+		},
+	})
+	inst, err := s.GetInstance(context.Background(), instID)
+	if err != nil {
+		t.Fatalf("GetInstance: %v", err)
+	}
+	if inst.Maquette == nil {
+		t.Fatal("maquette not stored on instance")
+	}
+	if inst.Maquette.Timestamp == nil || inst.Maquette.Timestamp.Format != "Jan 2 15:04:05" {
+		t.Errorf("stored maquette format = %v, want Jan 2 15:04:05", inst.Maquette)
+	}
+}
+
+func TestAddSource_ReusesStoredMaquette(t *testing.T) {
+	s := store.NewMemStore()
+	h := &handler{store: s}
+	instID := extractID(t, call(t, h.handleChronolog, map[string]any{
+		"action": "create_instance", "name": "maq-reuse", "session_id": "s1",
+	}))
+	call(t, h.handleIntake, map[string]any{
+		"action": "add_source", "instance_id": instID, "source": "a.log",
+		"lines": []string{"Dec 20 04:57:41 host sshd[1]: line-1"},
+		"maquette": map[string]any{
+			"timestamp": map[string]any{
+				"regex":  `^(\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2})`,
+				"format": "Jan 2 15:04:05",
+			},
+		},
+	})
+	call(t, h.handleIntake, map[string]any{
+		"action": "add_source", "instance_id": instID, "source": "b.log",
+		"lines": []string{"Dec 20 05:00:00 host sshd[1]: line-2"},
+	})
+	res := call(t, h.handleQuery, map[string]any{
+		"action": "timeline", "instance_id": instID,
+	})
+	events := extractArray(t, res)
+	if len(events) != 2 {
+		t.Fatalf("events = %d, want 2", len(events))
+	}
+	for _, ev := range events {
+		e := ev.(map[string]any)
+		if e["time_confidence"] != domain.ConfidenceMaquette {
+			t.Errorf("event confidence = %v, want maquette", e["time_confidence"])
+		}
+	}
+}
+
+func TestAddSource_NoMaquette_BackwardCompatible(t *testing.T) {
+	s := store.NewMemStore()
+	h := &handler{store: s}
+	instID := extractID(t, call(t, h.handleChronolog, map[string]any{
+		"action": "create_instance", "name": "no-maq", "session_id": "s1",
+	}))
+	call(t, h.handleIntake, map[string]any{
+		"action": "add_source", "instance_id": instID, "source": "a.log",
+		"lines": []string{
+			"2025-12-20T14:59:20Z offset 3ns",
+			"plain text without timestamp",
+		},
+	})
+	res := call(t, h.handleQuery, map[string]any{
+		"action": "timeline", "instance_id": instID,
+	})
+	events := extractArray(t, res)
+	if len(events) != 2 {
+		t.Fatalf("events = %d, want 2", len(events))
+	}
+	var foundRFC3339, foundUnknown bool
+	for _, ev := range events {
+		e := ev.(map[string]any)
+		switch e["time_confidence"] {
+		case domain.ConfidenceRFC3339:
+			foundRFC3339 = true
+		case domain.ConfidenceUnknown:
+			foundUnknown = true
+		}
+	}
+	if !foundRFC3339 {
+		t.Error("expected an event with confidence rfc3339")
+	}
+	if !foundUnknown {
+		t.Error("expected an event with confidence unknown")
+	}
+}
+
 // --- test helpers ---
 
 func setupWithEvents(t *testing.T, n int) (h *handler, instID string, eventIDs []string) {

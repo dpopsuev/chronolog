@@ -268,6 +268,75 @@ func TestSQLite_ListEvents_AfterBefore(t *testing.T) {
 	}
 }
 
+func TestSQLite_InstanceMaquette(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+	s.PutDomain(ctx, &domain.Domain{ID: "d1", Name: "test", CreatedAt: time.Now().UTC()})
+	s.PutEnvironment(ctx, &domain.Environment{ID: "e1", DomainID: "d1", Name: "env", CreatedAt: time.Now().UTC()})
+	s.PutSession(ctx, &domain.Session{ID: "s1", EnvironmentID: "e1", Name: "sess", StartedAt: time.Now().UTC()})
+
+	inst := &domain.Instance{
+		ID: "i1", SessionID: "s1", Name: "with-maquette",
+		StartedAt: time.Now().UTC(),
+		Maquette: &domain.Maquette{
+			Timestamp: &domain.MaquetteTimestamp{
+				Regex:  `^(\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2})`,
+				Format: "Jan 2 15:04:05",
+			},
+			Source: &domain.MaquetteSource{
+				Regex: `(?P<source>\S+)\[\d+\]:`,
+			},
+			Severity: &domain.MaquetteSeverity{
+				Keywords: map[string]string{"ERROR": "error"},
+			},
+		},
+	}
+	if err := s.PutInstance(ctx, inst); err != nil {
+		t.Fatalf("PutInstance: %v", err)
+	}
+
+	got, err := s.GetInstance(ctx, "i1")
+	if err != nil {
+		t.Fatalf("GetInstance: %v", err)
+	}
+	if got.Maquette == nil {
+		t.Fatal("maquette is nil after round-trip")
+	}
+	if got.Maquette.Timestamp == nil || got.Maquette.Timestamp.Format != "Jan 2 15:04:05" {
+		t.Errorf("timestamp format = %v, want Jan 2 15:04:05", got.Maquette.Timestamp)
+	}
+	if got.Maquette.Source == nil || got.Maquette.Source.Regex == "" {
+		t.Error("source regex lost after round-trip")
+	}
+	if got.Maquette.Severity == nil || got.Maquette.Severity.Keywords["ERROR"] != "error" {
+		t.Error("severity keywords lost after round-trip")
+	}
+}
+
+func TestSQLite_InstanceNoMaquette(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+	s.PutDomain(ctx, &domain.Domain{ID: "d1", Name: "test", CreatedAt: time.Now().UTC()})
+	s.PutEnvironment(ctx, &domain.Environment{ID: "e1", DomainID: "d1", Name: "env", CreatedAt: time.Now().UTC()})
+	s.PutSession(ctx, &domain.Session{ID: "s1", EnvironmentID: "e1", Name: "sess", StartedAt: time.Now().UTC()})
+
+	inst := &domain.Instance{
+		ID: "i2", SessionID: "s1", Name: "no-maquette",
+		StartedAt: time.Now().UTC(),
+	}
+	if err := s.PutInstance(ctx, inst); err != nil {
+		t.Fatalf("PutInstance: %v", err)
+	}
+
+	got, err := s.GetInstance(ctx, "i2")
+	if err != nil {
+		t.Fatalf("GetInstance: %v", err)
+	}
+	if got.Maquette != nil {
+		t.Errorf("maquette = %v, want nil", got.Maquette)
+	}
+}
+
 func TestSQLite_Aliases(t *testing.T) {
 	s := openTestDB(t)
 	ctx := context.Background()

@@ -413,12 +413,13 @@ func (h *handler) handleChronolog(ctx context.Context, raw json.RawMessage) (too
 // --- intake tool ---
 
 type intakeInput struct {
-	Action     string   `json:"action"`
-	InstanceID string   `json:"instance_id,omitempty"`
-	Source     string   `json:"source,omitempty"`
-	Lines      []string `json:"lines,omitempty"`
-	Collector  string   `json:"collector,omitempty"`
-	FileHash   string   `json:"file_hash,omitempty"`
+	Action     string           `json:"action"`
+	InstanceID string           `json:"instance_id,omitempty"`
+	Source     string           `json:"source,omitempty"`
+	Lines      []string         `json:"lines,omitempty"`
+	Collector  string           `json:"collector,omitempty"`
+	FileHash   string           `json:"file_hash,omitempty"`
+	Maquette   *domain.Maquette `json:"maquette,omitempty"`
 }
 
 func (h *handler) handleIntake(ctx context.Context, raw json.RawMessage) (tool.Result, error) {
@@ -457,23 +458,42 @@ func (h *handler) addSource(ctx context.Context, in intakeInput) (tool.Result, e
 	if len(in.Lines) == 0 {
 		return tool.ErrorResult(fmt.Errorf("lines: non-empty array required — read the file and pass individual lines, intake does not read files: %w", domain.ErrInvalidInput)), nil
 	}
+
+	maq := in.Maquette
+	if maq != nil {
+		if inst, err := h.store.GetInstance(ctx, in.InstanceID); err == nil {
+			inst.Maquette = maq
+			_ = h.store.PutInstance(ctx, inst)
+		}
+	} else {
+		if inst, err := h.store.GetInstance(ctx, in.InstanceID); err == nil && inst.Maquette != nil {
+			maq = inst.Maquette
+		}
+	}
+
+	compiled, err := parser.Compile(maq)
+	if err != nil {
+		return tool.ErrorResult(fmt.Errorf("maquette: %w", err)), nil
+	}
+
 	var added int
 	for i, line := range in.Lines {
 		hash := hashLine(in.Source, line)
 		lineNum := i + 1
 
-		ts, confidence := parser.Parse(line)
+		result := parser.ParseWithMaquette(line, compiled)
 
 		event := &domain.Event{
 			ID:             uuid.NewString(),
 			InstanceID:     in.InstanceID,
-			Timestamp:      ts,
-			TimeConfidence: confidence,
+			Timestamp:      result.Timestamp,
+			TimeConfidence: result.TimeConfidence,
 			Message:        line,
 			Source:         in.Source,
 			SourceHash:     hash,
 			LineNumber:     lineNum,
 			RawLine:        line,
+			Labels:         result.Labels,
 			Collector:      in.Collector,
 			FileHash:       in.FileHash,
 			CreatedAt:      time.Now().UTC(),

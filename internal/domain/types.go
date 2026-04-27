@@ -54,9 +54,39 @@ const (
 
 // Time confidence values.
 const (
-	ConfidenceRFC3339 = "rfc3339"
-	ConfidenceUnknown = "unknown"
+	ConfidenceRFC3339  = "rfc3339"
+	ConfidenceMaquette = "maquette"
+	ConfidenceUnknown  = "unknown"
 )
+
+// Well-known label keys set by maquette extraction.
+const (
+	LabelLogSource = "log_source"
+	LabelSeverity  = "severity"
+)
+
+// Maquette is a lightweight, declarative parser sketch for non-RFC3339 log formats.
+type Maquette struct {
+	Timestamp *MaquetteTimestamp `json:"timestamp,omitempty"`
+	Source    *MaquetteSource    `json:"source,omitempty"`
+	Severity  *MaquetteSeverity  `json:"severity,omitempty"`
+}
+
+// MaquetteTimestamp tells the parser how to extract and parse a timestamp.
+type MaquetteTimestamp struct {
+	Regex  string `json:"regex"`
+	Format string `json:"format"`
+}
+
+// MaquetteSource extracts a source/process name from the log line.
+type MaquetteSource struct {
+	Regex string `json:"regex"`
+}
+
+// MaquetteSeverity maps keywords found in the line to severity levels.
+type MaquetteSeverity struct {
+	Keywords map[string]string `json:"keywords"`
+}
 
 // CodeLocation references a source code line that produced a log entry.
 type CodeLocation struct {

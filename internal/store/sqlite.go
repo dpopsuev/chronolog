@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE TABLE IF NOT EXISTS instances (
 	id TEXT PRIMARY KEY, session_id TEXT NOT NULL, name TEXT NOT NULL,
 	alias TEXT DEFAULT '', source_pattern TEXT DEFAULT '',
-	immutable INTEGER DEFAULT 0,
+	immutable INTEGER DEFAULT 0, maquette TEXT DEFAULT '',
 	started_at TEXT NOT NULL, ended_at TEXT DEFAULT '',
 	FOREIGN KEY (session_id) REFERENCES sessions(id)
 );
@@ -424,28 +424,39 @@ func (s *SQLiteStore) PutInstance(ctx context.Context, inst *domain.Instance) er
 	if inst.Immutable {
 		immutable = 1
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT OR REPLACE INTO instances (id, session_id, name, alias, source_pattern, immutable, started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		inst.ID, inst.SessionID, inst.Name, inst.Alias, inst.SourcePattern, immutable, fmtTime(inst.StartedAt), fmtTimePtr(inst.EndedAt))
+	maqJSON := ""
+	if inst.Maquette != nil {
+		data, _ := json.Marshal(inst.Maquette)
+		maqJSON = string(data)
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT OR REPLACE INTO instances (id, session_id, name, alias, source_pattern, immutable, maquette, started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		inst.ID, inst.SessionID, inst.Name, inst.Alias, inst.SourcePattern, immutable, maqJSON, fmtTime(inst.StartedAt), fmtTimePtr(inst.EndedAt))
 	return err
 }
 
 func (s *SQLiteStore) GetInstance(ctx context.Context, id string) (*domain.Instance, error) {
 	var inst domain.Instance
-	var startedAt, endedAt string
+	var startedAt, endedAt, maqJSON string
 	var immutable int
-	err := s.db.QueryRowContext(ctx, `SELECT id, session_id, name, alias, source_pattern, immutable, started_at, ended_at FROM instances WHERE id = ?`, id).
-		Scan(&inst.ID, &inst.SessionID, &inst.Name, &inst.Alias, &inst.SourcePattern, &immutable, &startedAt, &endedAt)
+	err := s.db.QueryRowContext(ctx, `SELECT id, session_id, name, alias, source_pattern, immutable, maquette, started_at, ended_at FROM instances WHERE id = ?`, id).
+		Scan(&inst.ID, &inst.SessionID, &inst.Name, &inst.Alias, &inst.SourcePattern, &immutable, &maqJSON, &startedAt, &endedAt)
 	if err != nil {
 		return nil, err
 	}
 	inst.Immutable = immutable != 0
+	if maqJSON != "" {
+		var m domain.Maquette
+		if err := json.Unmarshal([]byte(maqJSON), &m); err == nil {
+			inst.Maquette = &m
+		}
+	}
 	inst.StartedAt = parseTime(startedAt)
 	inst.EndedAt = parseTimePtr(endedAt)
 	return &inst, nil
 }
 
 func (s *SQLiteStore) ListInstances(ctx context.Context, sessionID string) ([]*domain.Instance, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, session_id, name, alias, source_pattern, immutable, started_at, ended_at FROM instances WHERE session_id = ?`, sessionID)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, session_id, name, alias, source_pattern, immutable, maquette, started_at, ended_at FROM instances WHERE session_id = ?`, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -453,12 +464,18 @@ func (s *SQLiteStore) ListInstances(ctx context.Context, sessionID string) ([]*d
 	var result []*domain.Instance
 	for rows.Next() {
 		var inst domain.Instance
-		var startedAt, endedAt string
+		var startedAt, endedAt, maqJSON string
 		var immutable int
-		if err := rows.Scan(&inst.ID, &inst.SessionID, &inst.Name, &inst.Alias, &inst.SourcePattern, &immutable, &startedAt, &endedAt); err != nil {
+		if err := rows.Scan(&inst.ID, &inst.SessionID, &inst.Name, &inst.Alias, &inst.SourcePattern, &immutable, &maqJSON, &startedAt, &endedAt); err != nil {
 			return nil, err
 		}
 		inst.Immutable = immutable != 0
+		if maqJSON != "" {
+			var m domain.Maquette
+			if err := json.Unmarshal([]byte(maqJSON), &m); err == nil {
+				inst.Maquette = &m
+			}
+		}
 		inst.StartedAt = parseTime(startedAt)
 		inst.EndedAt = parseTimePtr(endedAt)
 		result = append(result, &inst)
