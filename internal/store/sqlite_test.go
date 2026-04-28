@@ -2,10 +2,13 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
+
+	_ "modernc.org/sqlite"
 
 	"github.com/dpopsuev/chronolog/internal/domain"
 	"github.com/dpopsuev/chronolog/internal/port"
@@ -30,8 +33,8 @@ func TestSQLite_SchemaVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SchemaVersion: %v", err)
 	}
-	if v != 1 {
-		t.Errorf("initial version = %d, want 1", v)
+	if v != 2 {
+		t.Errorf("initial version = %d, want 2", v)
 	}
 }
 
@@ -351,5 +354,100 @@ func TestSQLite_Aliases(t *testing.T) {
 	}
 	if id != "uuid-abc" {
 		t.Errorf("ResolveAlias = %q, want uuid-abc", id)
+	}
+}
+
+func TestSQLite_Migration_V1toV2(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.db")
+
+	// Create a v1 database with the OLD schema (no immutable, no collector, no cases)
+	v1Schema := `
+	CREATE TABLE IF NOT EXISTS domains (id TEXT PRIMARY KEY, name TEXT NOT NULL, alias TEXT DEFAULT '', description TEXT DEFAULT '', created_at TEXT NOT NULL);
+	CREATE TABLE IF NOT EXISTS environments (id TEXT PRIMARY KEY, domain_id TEXT NOT NULL, name TEXT NOT NULL, alias TEXT DEFAULT '', created_at TEXT NOT NULL);
+	CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, environment_id TEXT NOT NULL, name TEXT NOT NULL, alias TEXT DEFAULT '', started_at TEXT NOT NULL, ended_at TEXT DEFAULT '');
+	CREATE TABLE IF NOT EXISTS instances (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, name TEXT NOT NULL, alias TEXT DEFAULT '', source_pattern TEXT DEFAULT '', started_at TEXT NOT NULL, ended_at TEXT DEFAULT '');
+	CREATE TABLE IF NOT EXISTS phases (id TEXT PRIMARY KEY, instance_id TEXT NOT NULL, name TEXT NOT NULL, label TEXT DEFAULT '', started_at TEXT NOT NULL, ended_at TEXT DEFAULT '');
+	CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, instance_id TEXT NOT NULL, timestamp TEXT NOT NULL, time_confidence TEXT NOT NULL DEFAULT 'unknown', message TEXT NOT NULL, source TEXT DEFAULT '', source_hash TEXT DEFAULT '', line_number INTEGER DEFAULT 0, raw_line TEXT NOT NULL, labels TEXT DEFAULT '{}', created_at TEXT NOT NULL);
+	CREATE TABLE IF NOT EXISTS edges (from_id TEXT NOT NULL, relation TEXT NOT NULL, to_id TEXT NOT NULL, PRIMARY KEY (from_id, relation, to_id));
+	CREATE TABLE IF NOT EXISTS services (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT DEFAULT '');
+	CREATE TABLE IF NOT EXISTS codebases (id TEXT PRIMARY KEY, name TEXT NOT NULL, repo_url TEXT DEFAULT '', root_path TEXT DEFAULT '');
+	CREATE TABLE IF NOT EXISTS bookmarks (id TEXT PRIMARY KEY, event_id TEXT NOT NULL, label TEXT NOT NULL, note TEXT DEFAULT '', created_at TEXT NOT NULL);
+	CREATE TABLE IF NOT EXISTS highlights (id TEXT PRIMARY KEY, event_id TEXT NOT NULL, substring TEXT NOT NULL, label TEXT DEFAULT '', note TEXT DEFAULT '', created_at TEXT NOT NULL);
+	CREATE TABLE IF NOT EXISTS buckets (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT DEFAULT '', query TEXT DEFAULT '');
+	CREATE TABLE IF NOT EXISTS aliases (alias TEXT PRIMARY KEY, id TEXT NOT NULL);
+	CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+	INSERT INTO schema_version (version) VALUES (1);
+	CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(event_id, message, source, raw_line);
+	`
+	db, err := sql.Open("sqlite", path+"?_pragma=journal_mode(wal)&_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatalf("open v1 db: %v", err)
+	}
+	if _, err := db.Exec(v1Schema); err != nil {
+		t.Fatalf("create v1 schema: %v", err)
+	}
+	// Insert a test event and instance to verify data preservation
+	_, _ = db.Exec(`INSERT INTO instances (id, session_id, name, started_at) VALUES ('inst-1', 'sess-1', 'old-instance', '2025-01-01T00:00:00Z')`)
+	_, _ = db.Exec(`INSERT INTO events (id, instance_id, timestamp, time_confidence, message, source, source_hash, line_number, raw_line, labels, created_at) VALUES ('evt-1', 'inst-1', '2025-01-01T00:00:01Z', 'rfc3339', 'test event', 'syslog', 'hash1', 1, 'test event', '{}', '2025-01-01T00:00:01Z')`)
+	db.Close()
+
+	// Open with current code — should migrate v1→v2
+	s, err := OpenSQLite(path, 5000)
+	if err != nil {
+		t.Fatalf("OpenSQLite v1 db: %v", err)
+	}
+	defer s.Close()
+
+	// Verify schema version bumped
+	v, err := s.SchemaVersion(ctx)
+	if err != nil {
+		t.Fatalf("SchemaVersion: %v", err)
+	}
+	if v != 2 {
+		t.Fatalf("expected schema version 2 after migration, got %d", v)
+	}
+
+	// Verify instances.immutable column exists
+	inst, err := s.GetInstance(ctx, "inst-1")
+	if err != nil {
+		t.Fatalf("GetInstance after migration: %v", err)
+	}
+	if inst.Name != "old-instance" {
+		t.Fatalf("instance data not preserved: got name=%q", inst.Name)
+	}
+	if inst.Immutable {
+		t.Fatal("expected immutable=false for migrated instance")
+	}
+
+	// Verify events.collector and events.file_hash columns exist
+	evt, err := s.GetEvent(ctx, "evt-1")
+	if err != nil {
+		t.Fatalf("GetEvent after migration: %v", err)
+	}
+	if evt.Message != "test event" {
+		t.Fatalf("event data not preserved: got message=%q", evt.Message)
+	}
+
+	// Verify cases table exists
+	_, err = s.ListCases(ctx)
+	if err != nil {
+		t.Fatalf("ListCases after migration: %v", err)
+	}
+
+	// Verify set_immutable works on migrated instance
+	inst.Immutable = true
+	if err := s.PutInstance(ctx, inst); err != nil {
+		t.Fatalf("PutInstance with immutable after migration: %v", err)
+	}
+	inst2, _ := s.GetInstance(ctx, "inst-1")
+	if !inst2.Immutable {
+		t.Fatal("immutable flag not persisted after migration")
+	}
+
+	// Verify collector/file_hash work on migrated event
+	if err := s.UpdateEventLabels(ctx, "evt-1", map[string]string{"test": "label"}); err != nil {
+		t.Fatalf("UpdateEventLabels after migration: %v", err)
 	}
 }

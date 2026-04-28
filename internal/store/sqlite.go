@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/dpopsuev/chronolog/internal/domain"
@@ -150,13 +151,83 @@ func OpenSQLite(path string, busyTimeoutMs int) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("check schema version: %w", err)
 	}
 	if count == 0 {
-		if _, err := db.Exec("INSERT INTO schema_version (version) VALUES (1)"); err != nil {
+		if _, err := db.Exec("INSERT INTO schema_version (version) VALUES (2)"); err != nil {
 			db.Close()
 			return nil, fmt.Errorf("set initial schema version: %w", err)
 		}
 	}
+	if err := runMigrations(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("run migrations: %w", err)
+	}
 	slog.InfoContext(context.Background(), "sqlite database opened", slog.String(logKeyDBPath, path))
 	return &SQLiteStore{db: db}, nil
+}
+
+const (
+	logKeyFromVersion = "from_version"
+	logKeyToVersion   = "to_version"
+)
+
+func runMigrations(db *sql.DB) error {
+	var version int
+	if err := db.QueryRow("SELECT version FROM schema_version LIMIT 1").Scan(&version); err != nil {
+		return fmt.Errorf("read schema version: %w", err)
+	}
+	migrations := []struct {
+		toVersion int
+		stmts     []string
+	}{
+		{
+			toVersion: 2,
+			stmts: []string{
+				`ALTER TABLE instances ADD COLUMN immutable INTEGER DEFAULT 0`,
+				`ALTER TABLE instances ADD COLUMN maquette TEXT DEFAULT ''`,
+				`ALTER TABLE events ADD COLUMN collector TEXT DEFAULT ''`,
+				`ALTER TABLE events ADD COLUMN file_hash TEXT DEFAULT ''`,
+				`CREATE TABLE IF NOT EXISTS cases (id TEXT PRIMARY KEY, title TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open', created_at TEXT NOT NULL, closed_at TEXT DEFAULT '')`,
+				`CREATE TABLE IF NOT EXISTS symptoms (id TEXT PRIMARY KEY, case_id TEXT NOT NULL, description TEXT NOT NULL, event_id TEXT DEFAULT '', created_at TEXT NOT NULL)`,
+				`CREATE TABLE IF NOT EXISTS root_causes (id TEXT PRIMARY KEY, case_id TEXT NOT NULL UNIQUE, description TEXT NOT NULL, event_id TEXT DEFAULT '', created_at TEXT NOT NULL)`,
+				`CREATE TABLE IF NOT EXISTS transcript_entries (id TEXT PRIMARY KEY, case_id TEXT NOT NULL, seq INTEGER NOT NULL, content TEXT NOT NULL, tool TEXT DEFAULT '', action TEXT DEFAULT '', params TEXT DEFAULT '', result_hash TEXT DEFAULT '', created_at TEXT NOT NULL)`,
+			},
+		},
+	}
+	for _, m := range migrations {
+		if version >= m.toVersion {
+			continue
+		}
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("begin migration to v%d: %w", m.toVersion, err)
+		}
+		for _, stmt := range m.stmts {
+			if _, err := tx.Exec(stmt); err != nil {
+				if isDuplicateColumn(err) || isTableExists(err) {
+					continue
+				}
+				_ = tx.Rollback()
+				return fmt.Errorf("migration v%d: %w", m.toVersion, err)
+			}
+		}
+		if _, err := tx.Exec("UPDATE schema_version SET version = ?", m.toVersion); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("update schema version to %d: %w", m.toVersion, err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit migration v%d: %w", m.toVersion, err)
+		}
+		slog.InfoContext(context.Background(), "schema migrated", slog.Int(logKeyFromVersion, version), slog.Int(logKeyToVersion, m.toVersion))
+		version = m.toVersion
+	}
+	return nil
+}
+
+func isDuplicateColumn(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "duplicate column")
+}
+
+func isTableExists(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "already exists")
 }
 
 func (s *SQLiteStore) Close() error {
