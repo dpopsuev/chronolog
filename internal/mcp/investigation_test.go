@@ -457,3 +457,26 @@ func setupInstance(t *testing.T, h *handler) string {
 	_ = s
 	return extractID(t, instRes)
 }
+
+func TestAliasResolution(t *testing.T) {
+	s := store.NewMemStore()
+	h := &handler{store: s}
+
+	// Create domain → get UUID
+	domRes := call(t, h.handleChronolog, map[string]any{"action": "create_domain", "name": "alias-domain"})
+	domID := extractID(t, domRes)
+
+	// Create environment using the UUID (normal flow)
+	call(t, h.handleChronolog, map[string]any{"action": "create_environment", "name": "alias-env", "domain_id": domID})
+
+	// Now use the NAME to list environments — should resolve alias → UUID
+	t.Run("list_environments_by_name", func(t *testing.T) {
+		res := call(t, h.handleChronolog, map[string]any{
+			"action": "list_environments", "domain_id": "alias-domain",
+		})
+		envs := extractArray(t, res)
+		if len(envs) != 1 {
+			t.Fatalf("expected 1 environment via alias, got %d", len(envs))
+		}
+	})
+}

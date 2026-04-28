@@ -52,6 +52,8 @@ func (h *handler) handleCase(ctx context.Context, raw json.RawMessage) (tool.Res
 		return tool.ErrorResult(err), nil
 	}
 	slog.DebugContext(ctx, "handler entry", slog.String(logKeyTool, "case"), slog.String(logKeyAction, in.Action))
+	in.CaseID = h.resolveID(ctx, in.CaseID)
+	in.EventID = h.resolveID(ctx, in.EventID)
 	switch in.Action {
 	case "open_case":
 		return h.openCase(ctx, in)
@@ -104,6 +106,7 @@ func (h *handler) openCase(ctx context.Context, in caseInput) (tool.Result, erro
 	if err := h.store.PutCase(ctx, c); err != nil {
 		return tool.ErrorResult(err), nil
 	}
+	h.autoAlias(ctx, c.ID, c.Title, "")
 	slog.DebugContext(ctx, "case opened", slog.String(logKeyCaseID, c.ID))
 	return jsonResult(c)
 }

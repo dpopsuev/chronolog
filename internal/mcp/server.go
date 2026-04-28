@@ -278,6 +278,27 @@ type handler struct {
 	git   GitRunner
 }
 
+func (h *handler) resolveID(ctx context.Context, id string) string {
+	if id == "" {
+		return ""
+	}
+	resolved, err := h.store.ResolveAlias(ctx, id)
+	if err == nil {
+		return resolved
+	}
+	return id
+}
+
+func (h *handler) autoAlias(ctx context.Context, id, name, alias string) {
+	a := alias
+	if a == "" {
+		a = name
+	}
+	if a != "" {
+		_ = h.store.SetAlias(ctx, id, a)
+	}
+}
+
 // --- chronolog tool ---
 
 type chronologInput struct {
@@ -300,12 +321,18 @@ func (h *handler) handleChronolog(ctx context.Context, raw json.RawMessage) (too
 		return tool.ErrorResult(err), nil
 	}
 	slog.DebugContext(ctx, "handler entry", slog.String(logKeyTool, "chronolog"), slog.String(logKeyAction, in.Action))
+	in.DomainID = h.resolveID(ctx, in.DomainID)
+	in.EnvironmentID = h.resolveID(ctx, in.EnvironmentID)
+	in.SessionID = h.resolveID(ctx, in.SessionID)
+	in.InstanceID = h.resolveID(ctx, in.InstanceID)
+	in.BucketID = h.resolveID(ctx, in.BucketID)
 	switch in.Action {
 	case "create_domain":
 		d := &domain.Domain{ID: uuid.NewString(), Name: in.Name, Alias: in.Alias, Description: in.Description, CreatedAt: time.Now().UTC()}
 		if err := h.store.PutDomain(ctx, d); err != nil {
 			return tool.ErrorResult(err), nil
 		}
+		h.autoAlias(ctx, d.ID, d.Name, d.Alias)
 		return jsonResult(d)
 	case "list_domains":
 		ds, err := h.store.ListDomains(ctx)
@@ -318,6 +345,7 @@ func (h *handler) handleChronolog(ctx context.Context, raw json.RawMessage) (too
 		if err := h.store.PutEnvironment(ctx, e); err != nil {
 			return tool.ErrorResult(err), nil
 		}
+		h.autoAlias(ctx, e.ID, e.Name, e.Alias)
 		return jsonResult(e)
 	case "list_environments":
 		es, err := h.store.ListEnvironments(ctx, in.DomainID)
@@ -330,6 +358,7 @@ func (h *handler) handleChronolog(ctx context.Context, raw json.RawMessage) (too
 		if err := h.store.PutSession(ctx, s); err != nil {
 			return tool.ErrorResult(err), nil
 		}
+		h.autoAlias(ctx, s.ID, s.Name, s.Alias)
 		return jsonResult(s)
 	case "list_sessions":
 		ss, err := h.store.ListSessions(ctx, in.EnvironmentID)
@@ -342,6 +371,7 @@ func (h *handler) handleChronolog(ctx context.Context, raw json.RawMessage) (too
 		if err := h.store.PutInstance(ctx, i); err != nil {
 			return tool.ErrorResult(err), nil
 		}
+		h.autoAlias(ctx, i.ID, i.Name, i.Alias)
 		return jsonResult(i)
 	case "list_instances":
 		is, err := h.store.ListInstances(ctx, in.SessionID)
@@ -443,6 +473,7 @@ func (h *handler) handleIntake(ctx context.Context, raw json.RawMessage) (tool.R
 		return tool.ErrorResult(err), nil
 	}
 	slog.DebugContext(ctx, "handler entry", slog.String(logKeyTool, "intake"), slog.String(logKeyAction, in.Action))
+	in.InstanceID = h.resolveID(ctx, in.InstanceID)
 	switch in.Action {
 	case "add_source":
 		return h.addSource(ctx, in)
@@ -682,6 +713,9 @@ func (h *handler) handleGraph(ctx context.Context, raw json.RawMessage) (tool.Re
 		return tool.ErrorResult(err), nil
 	}
 	slog.DebugContext(ctx, "handler entry", slog.String(logKeyTool, "graph"), slog.String(logKeyAction, in.Action))
+	in.InstanceID = h.resolveID(ctx, in.InstanceID)
+	in.EventID = h.resolveID(ctx, in.EventID)
+	in.CodebaseID = h.resolveID(ctx, in.CodebaseID)
 	switch in.Action {
 	case "add_edge":
 		e := domain.Edge{FromID: in.FromID, Relation: in.Relation, ToID: in.ToID}
@@ -952,6 +986,10 @@ func (h *handler) handleQuery(ctx context.Context, raw json.RawMessage) (tool.Re
 		return tool.ErrorResult(err), nil
 	}
 	slog.DebugContext(ctx, "handler entry", slog.String(logKeyTool, "query"), slog.String(logKeyAction, in.Action))
+	in.InstanceID = h.resolveID(ctx, in.InstanceID)
+	in.SessionID = h.resolveID(ctx, in.SessionID)
+	in.EnvironmentID = h.resolveID(ctx, in.EnvironmentID)
+	in.EventID = h.resolveID(ctx, in.EventID)
 	limit := in.Limit
 	if limit <= 0 {
 		limit = 100
@@ -1088,6 +1126,12 @@ func (h *handler) handleDiff(ctx context.Context, raw json.RawMessage) (tool.Res
 		return tool.ErrorResult(err), nil
 	}
 	slog.DebugContext(ctx, "handler entry", slog.String(logKeyTool, "diff"), slog.String(logKeyAction, in.Action))
+	in.SessionID = h.resolveID(ctx, in.SessionID)
+	in.BaselineSessionID = h.resolveID(ctx, in.BaselineSessionID)
+	in.InstanceA = h.resolveID(ctx, in.InstanceA)
+	in.InstanceB = h.resolveID(ctx, in.InstanceB)
+	in.EnvironmentA = h.resolveID(ctx, in.EnvironmentA)
+	in.EnvironmentB = h.resolveID(ctx, in.EnvironmentB)
 	switch in.Action {
 	case "instance_diff", "hot_cold_map":
 		return h.instanceDiff(ctx, in)
@@ -1130,6 +1174,8 @@ func (h *handler) handleProjection(ctx context.Context, raw json.RawMessage) (to
 		return tool.ErrorResult(err), nil
 	}
 	slog.DebugContext(ctx, "handler entry", slog.String(logKeyTool, "projection"), slog.String(logKeyAction, in.Action))
+	in.InstanceID = h.resolveID(ctx, in.InstanceID)
+	in.SessionID = h.resolveID(ctx, in.SessionID)
 	switch in.Action {
 	case "scalar":
 		return h.projScalar(ctx, in)
