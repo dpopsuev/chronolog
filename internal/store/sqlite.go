@@ -235,7 +235,7 @@ func (s *SQLiteStore) Close() error {
 	return s.db.Close()
 }
 
-func fmtTime(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
+func fmtTime(t time.Time) string { return t.Format(time.RFC3339Nano) }
 func fmtTimePtr(t *time.Time) string {
 	if t == nil {
 		return ""
