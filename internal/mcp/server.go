@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -41,10 +43,11 @@ var chronologSchema = json.RawMessage(`{
 var intakeSchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
-		"action": {"type": "string", "enum": ["add_source", "list_sources", "remove_source"], "description": "Intake action"},
+		"action": {"type": "string", "enum": ["add_source", "list_sources", "remove_source", "test_maquette"], "description": "Intake action"},
 		"instance_id": {"type": "string", "description": "UUID of the target instance"},
 		"source": {"type": "string", "description": "Source label (e.g. filename or service name)"},
 		"lines": {"type": "array", "items": {"type": "string"}, "description": "Log lines to ingest. Caller must read the file and split into lines — intake does not read files."},
+		"file_path": {"type": "string", "description": "Path to log file on disk. Alternative to lines[] — Chronolog reads and splits the file."},
 		"collector": {"type": "string", "description": "Who/what collected this source (optional provenance)"},
 		"file_hash": {"type": "string", "description": "SHA256 hash of the original file (optional provenance)"}
 	},
@@ -417,6 +420,7 @@ type intakeInput struct {
 	InstanceID string           `json:"instance_id,omitempty"`
 	Source     string           `json:"source,omitempty"`
 	Lines      []string         `json:"lines,omitempty"`
+	FilePath   string           `json:"file_path,omitempty"`
 	Collector  string           `json:"collector,omitempty"`
 	FileHash   string           `json:"file_hash,omitempty"`
 	Maquette   *domain.Maquette `json:"maquette,omitempty"`
@@ -443,6 +447,8 @@ func (h *handler) handleIntake(ctx context.Context, raw json.RawMessage) (tool.R
 		return jsonResult(sources)
 	case "remove_source":
 		return h.removeSource(ctx, in)
+	case "test_maquette":
+		return h.testMaquette(ctx, in)
 	default:
 		return tool.ErrorResult(fmt.Errorf("intake action %q: %w", in.Action, domain.ErrUnknownAction)), nil
 	}
@@ -455,8 +461,15 @@ func (h *handler) addSource(ctx context.Context, in intakeInput) (tool.Result, e
 	if in.Source == "" {
 		return tool.ErrorResult(fmt.Errorf("source: %w", domain.ErrInvalidInput)), nil
 	}
+	if len(in.Lines) == 0 && in.FilePath != "" {
+		lines, err := readFileLines(in.FilePath)
+		if err != nil {
+			return tool.ErrorResult(err), nil
+		}
+		in.Lines = lines
+	}
 	if len(in.Lines) == 0 {
-		return tool.ErrorResult(fmt.Errorf("lines: non-empty array required — read the file and pass individual lines, intake does not read files: %w", domain.ErrInvalidInput)), nil
+		return tool.ErrorResult(fmt.Errorf("lines or file_path required: %w", domain.ErrInvalidInput)), nil
 	}
 
 	maq := in.Maquette
@@ -549,6 +562,64 @@ func (h *handler) removeSource(ctx context.Context, in intakeInput) (tool.Result
 		return tool.ErrorResult(fmt.Errorf("source %q in instance %q: %w", in.Source, in.InstanceID, domain.ErrSourceNotFound)), nil
 	}
 	return jsonResult(map[string]any{"removed": removed, "source": in.Source})
+}
+
+func readFileLines(path string) ([]string, error) {
+	if strings.Contains(path, "..") {
+		return nil, fmt.Errorf("file_path contains '..': %w", domain.ErrInvalidInput)
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("file_path: %w", err)
+	}
+	data, err := os.ReadFile(abs)
+	if err != nil {
+		return nil, fmt.Errorf("file_path: %w", err)
+	}
+	raw := strings.TrimRight(string(data), "\n")
+	if raw == "" {
+		return nil, fmt.Errorf("file is empty: %w", domain.ErrInvalidInput)
+	}
+	return strings.Split(raw, "\n"), nil
+}
+
+func (h *handler) testMaquette(_ context.Context, in intakeInput) (tool.Result, error) {
+	if in.Maquette == nil {
+		return tool.ErrorResult(fmt.Errorf("maquette: %w", domain.ErrInvalidInput)), nil
+	}
+	lines := in.Lines
+	if len(lines) == 0 && in.FilePath != "" {
+		var err error
+		lines, err = readFileLines(in.FilePath)
+		if err != nil {
+			return tool.ErrorResult(err), nil
+		}
+	}
+	if len(lines) == 0 {
+		return tool.ErrorResult(fmt.Errorf("lines or file_path required: %w", domain.ErrInvalidInput)), nil
+	}
+	compiled, err := parser.Compile(in.Maquette)
+	if err != nil {
+		return tool.ErrorResult(fmt.Errorf("maquette: %w", err)), nil
+	}
+	type lineResult struct {
+		Line           string            `json:"line"`
+		Timestamp      string            `json:"timestamp"`
+		TimeConfidence string            `json:"time_confidence"`
+		Labels         map[string]string `json:"labels,omitempty"`
+	}
+	results := make([]lineResult, 0, len(lines))
+	for _, line := range lines {
+		pr := parser.ParseWithMaquette(line, compiled)
+		ts := ""
+		if !pr.Timestamp.IsZero() {
+			ts = pr.Timestamp.Format(time.RFC3339Nano)
+		}
+		results = append(results, lineResult{
+			Line: line, Timestamp: ts, TimeConfidence: pr.TimeConfidence, Labels: pr.Labels,
+		})
+	}
+	return jsonResult(results)
 }
 
 func hashLine(source, line string) string {

@@ -1,9 +1,12 @@
 package mcp
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/dpopsuev/chronolog/internal/domain"
 	"github.com/dpopsuev/chronolog/internal/store"
 )
 
@@ -330,4 +333,104 @@ func TestForensicInvestigationWorkflow(t *testing.T) { //nolint:funlen,gocyclo /
 			t.Fatalf("expected verdict in result, got %s", text)
 		}
 	})
+}
+
+func TestTestMaquette(t *testing.T) {
+	s := store.NewMemStore()
+	h := &handler{store: s}
+
+	maq := &domain.Maquette{
+		Timestamp: &domain.MaquetteTimestamp{
+			Regex:  `(\w{3}\s+\d+\s+\d{2}:\d{2}:\d{2})`,
+			Format: "Jan  2 15:04:05",
+		},
+		Severity: &domain.MaquetteSeverity{
+			Keywords: map[string]string{"error": "error", "warn": "warning", "info": "info"},
+		},
+	}
+
+	t.Run("happy_path", func(t *testing.T) {
+		res := call(t, h.handleIntake, map[string]any{
+			"action":   "test_maquette",
+			"maquette": maq,
+			"lines":    []string{"Jan  5 14:23:01 myhost syslogd: info message", "Jan  5 14:23:02 myhost kernel: error something broke"},
+		})
+		arr := extractArray(t, res)
+		if len(arr) != 2 {
+			t.Fatalf("expected 2 results, got %d", len(arr))
+		}
+		text := resultText(t, res)
+		if !strings.Contains(text, "maquette") {
+			t.Fatalf("expected time_confidence=maquette, got %s", text)
+		}
+	})
+
+	t.Run("bad_regex", func(t *testing.T) {
+		callExpectError(t, h.handleIntake, map[string]any{
+			"action":   "test_maquette",
+			"maquette": &domain.Maquette{Timestamp: &domain.MaquetteTimestamp{Regex: "[invalid"}},
+			"lines":    []string{"test"},
+		})
+	})
+
+	t.Run("no_maquette", func(t *testing.T) {
+		callExpectError(t, h.handleIntake, map[string]any{
+			"action": "test_maquette",
+			"lines":  []string{"test"},
+		})
+	})
+}
+
+func TestAddSourceFilePath(t *testing.T) {
+	s := store.NewMemStore()
+	h := &handler{store: s}
+
+	call(t, h.handleChronolog, map[string]any{"action": "create_domain", "name": "test"})
+	call(t, h.handleChronolog, map[string]any{"action": "create_environment", "name": "test", "domain_id": "need-real-id"})
+
+	ctx := t
+	_ = ctx
+
+	instID := setupInstance(t, h)
+
+	tmpFile := filepath.Join(t.TempDir(), "test.log")
+	os.WriteFile(tmpFile, []byte("2025-01-01T00:00:01Z line one\n2025-01-01T00:00:02Z line two\n2025-01-01T00:00:03Z line three\n"), 0o644)
+
+	t.Run("ingest_from_file", func(t *testing.T) {
+		res := call(t, h.handleIntake, map[string]any{
+			"action": "add_source", "instance_id": instID, "source": "file.log", "file_path": tmpFile,
+		})
+		text := resultText(t, res)
+		if !strings.Contains(text, `"added": 3`) {
+			t.Fatalf("expected 3 lines ingested, got %s", text)
+		}
+	})
+
+	t.Run("path_traversal_rejected", func(t *testing.T) {
+		callExpectError(t, h.handleIntake, map[string]any{
+			"action": "add_source", "instance_id": instID, "source": "bad", "file_path": "/etc/../etc/passwd",
+		})
+	})
+
+	t.Run("nonexistent_file", func(t *testing.T) {
+		callExpectError(t, h.handleIntake, map[string]any{
+			"action": "add_source", "instance_id": instID, "source": "nope", "file_path": "/tmp/nonexistent-chronolog-test-file",
+		})
+	})
+}
+
+func setupInstance(t *testing.T, h *handler) string {
+	t.Helper()
+	s := h.store
+	ctx := t
+	_ = ctx
+	domRes := call(t, h.handleChronolog, map[string]any{"action": "create_domain", "name": "fp-test"})
+	domID := extractID(t, domRes)
+	envRes := call(t, h.handleChronolog, map[string]any{"action": "create_environment", "name": "fp-env", "domain_id": domID})
+	envID := extractID(t, envRes)
+	sessRes := call(t, h.handleChronolog, map[string]any{"action": "create_session", "name": "fp-sess", "environment_id": envID})
+	sessID := extractID(t, sessRes)
+	instRes := call(t, h.handleChronolog, map[string]any{"action": "create_instance", "name": "fp-inst", "session_id": sessID})
+	_ = s
+	return extractID(t, instRes)
 }
