@@ -156,9 +156,20 @@ const instructions = "Chronolog consolidates multiple log sources into a single 
 	"One log line = one event. Unstructured lines stored with time_confidence: unknown, not dropped. " +
 	"Idempotent intake: re-adding same source produces no duplicates. " +
 	"FTS5 full-text search available via query search action. " +
-	"Diff compares instances/sessions/environments. Projection provides scalar/vector/heatmap/cube analytics."
+	"Diff compares instances/sessions/environments. Projection provides scalar/vector/heatmap/cube analytics. " +
+	"Forensic investigation: graph label_event/unlabel_event/list_labels to tag events, " +
+	"query search_by_label/search_by_bookmark to find tagged evidence, " +
+	"query suspects to rank sources by co-occurrence with labeled events, " +
+	"query time_of_defect to pinpoint when healthy became unhealthy, " +
+	"query recurrence to check if a pattern appeared in previous sessions, " +
+	"graph auto_trace/blame/change_window for git code traceability, " +
+	"diff regression_check to compare test runs against a healthy baseline. " +
+	"Case tool for investigation lifecycle: open_case, add_symptom, set_root_cause, " +
+	"append_transcript (replayable), close_case. " +
+	"Label conventions: category=symptom, category=suspect, category=smoking_gun, category=red_herring. " +
+	"Intake supports file_path (read from disk) and test_maquette (dry-run parser validation)."
 
-// NewServer creates the Chronolog MCP server with all 6 tools registered.
+// NewServer creates the Chronolog MCP server with all 7 tools registered.
 func NewServer(s port.Store, version string) *batterymcp.Server {
 	bsrv := batterymcp.NewServer("chronolog", version).
 		WithInstructions(instructions)
