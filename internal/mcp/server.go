@@ -447,15 +447,30 @@ func (h *handler) handleIntake(ctx context.Context, raw json.RawMessage) (tool.R
 	case "add_source":
 		return h.addSource(ctx, in)
 	case "list_sources":
-		events, err := h.store.ListEvents(ctx, in.InstanceID, port.EventFilter{Limit: 1000})
+		events, err := h.store.ListEvents(ctx, in.InstanceID, port.EventFilter{Limit: 100000})
 		if err != nil {
 			return tool.ErrorResult(err), nil
 		}
-		sources := make(map[string]int)
-		for _, e := range events {
-			sources[e.Source]++
+		type sourceInfo struct {
+			Source    string `json:"source"`
+			Count     int    `json:"count"`
+			Collector string `json:"collector,omitempty"`
+			FileHash  string `json:"file_hash,omitempty"`
 		}
-		return jsonResult(sources)
+		infoMap := make(map[string]*sourceInfo)
+		for _, e := range events {
+			si, ok := infoMap[e.Source]
+			if !ok {
+				si = &sourceInfo{Source: e.Source, Collector: e.Collector, FileHash: e.FileHash}
+				infoMap[e.Source] = si
+			}
+			si.Count++
+		}
+		result := make([]*sourceInfo, 0, len(infoMap))
+		for _, si := range infoMap {
+			result = append(result, si)
+		}
+		return jsonResult(result)
 	case "remove_source":
 		return h.removeSource(ctx, in)
 	case "test_maquette":

@@ -175,16 +175,13 @@ func TestRemoveSource(t *testing.T) {
 		"action":      "list_sources",
 		"instance_id": instID,
 	})
-	text := resultText(t, res)
-	var sources map[string]any
-	if err := json.Unmarshal([]byte(text), &sources); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
+	sources := extractArray(t, res)
 	if len(sources) != 1 {
 		t.Fatalf("sources = %d, want 1 (only b.log)", len(sources))
 	}
-	if _, ok := sources["b.log"]; !ok {
-		t.Errorf("expected b.log to remain, got %v", sources)
+	src := sources[0].(map[string]any)
+	if src["source"] != "b.log" {
+		t.Errorf("expected b.log to remain, got %v", src)
 	}
 }
 

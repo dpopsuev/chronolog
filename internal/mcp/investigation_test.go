@@ -419,6 +419,29 @@ func TestAddSourceFilePath(t *testing.T) {
 	})
 }
 
+func TestListSourcesProvenance(t *testing.T) {
+	s := store.NewMemStore()
+	h := &handler{store: s}
+	instID := setupInstance(t, h)
+
+	call(t, h.handleIntake, map[string]any{
+		"action": "add_source", "instance_id": instID, "source": "kernel",
+		"lines":     []string{"2025-01-01T00:00:01Z test line"},
+		"collector": "journalctl -k", "file_hash": "sha256:abc123",
+	})
+
+	res := call(t, h.handleIntake, map[string]any{
+		"action": "list_sources", "instance_id": instID,
+	})
+	text := resultText(t, res)
+	if !strings.Contains(text, "journalctl -k") {
+		t.Fatalf("expected collector in list_sources, got %s", text)
+	}
+	if !strings.Contains(text, "sha256:abc123") {
+		t.Fatalf("expected file_hash in list_sources, got %s", text)
+	}
+}
+
 func setupInstance(t *testing.T, h *handler) string {
 	t.Helper()
 	s := h.store
