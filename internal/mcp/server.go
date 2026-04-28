@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -43,7 +44,7 @@ var chronologSchema = json.RawMessage(`{
 var intakeSchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
-		"action": {"type": "string", "enum": ["add_source", "list_sources", "remove_source", "test_maquette"], "description": "Intake action"},
+		"action": {"type": "string", "enum": ["add_source", "list_sources", "remove_source", "test_maquette", "quick_intake"], "description": "Intake action"},
 		"instance_id": {"type": "string", "description": "UUID of the target instance"},
 		"source": {"type": "string", "description": "Source label (e.g. filename or service name)"},
 		"lines": {"type": "array", "items": {"type": "string"}, "description": "Log lines to ingest. Caller must read the file and split into lines — intake does not read files."},
@@ -456,15 +457,25 @@ func (h *handler) handleChronolog(ctx context.Context, raw json.RawMessage) (too
 
 // --- intake tool ---
 
+type intakeSource struct {
+	Source   string   `json:"source"`
+	Lines    []string `json:"lines,omitempty"`
+	FilePath string   `json:"file_path,omitempty"`
+	Command  string   `json:"command,omitempty"`
+}
+
 type intakeInput struct {
 	Action     string           `json:"action"`
 	InstanceID string           `json:"instance_id,omitempty"`
 	Source     string           `json:"source,omitempty"`
 	Lines      []string         `json:"lines,omitempty"`
 	FilePath   string           `json:"file_path,omitempty"`
+	Command    string           `json:"command,omitempty"`
 	Collector  string           `json:"collector,omitempty"`
 	FileHash   string           `json:"file_hash,omitempty"`
 	Maquette   *domain.Maquette `json:"maquette,omitempty"`
+	Name       string           `json:"name,omitempty"`
+	Sources    []intakeSource   `json:"sources,omitempty"`
 }
 
 func (h *handler) handleIntake(ctx context.Context, raw json.RawMessage) (tool.Result, error) {
@@ -506,6 +517,8 @@ func (h *handler) handleIntake(ctx context.Context, raw json.RawMessage) (tool.R
 		return h.removeSource(ctx, in)
 	case "test_maquette":
 		return h.testMaquette(ctx, in)
+	case "quick_intake":
+		return h.quickIntake(ctx, in)
 	default:
 		return tool.ErrorResult(fmt.Errorf("intake action %q: %w", in.Action, domain.ErrUnknownAction)), nil
 	}
@@ -525,8 +538,15 @@ func (h *handler) addSource(ctx context.Context, in intakeInput) (tool.Result, e
 		}
 		in.Lines = lines
 	}
+	if len(in.Lines) == 0 && in.Command != "" {
+		lines, err := readCommandLines(ctx, in.Command)
+		if err != nil {
+			return tool.ErrorResult(err), nil
+		}
+		in.Lines = lines
+	}
 	if len(in.Lines) == 0 {
-		return tool.ErrorResult(fmt.Errorf("lines or file_path required: %w", domain.ErrInvalidInput)), nil
+		return tool.ErrorResult(fmt.Errorf("lines, file_path, or command required: %w", domain.ErrInvalidInput)), nil
 	}
 
 	maq := in.Maquette
@@ -677,6 +697,115 @@ func (h *handler) testMaquette(_ context.Context, in intakeInput) (tool.Result, 
 		})
 	}
 	return jsonResult(results)
+}
+
+func readCommandLines(ctx context.Context, command string) ([]string, error) {
+	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("command %q: %w", command, err)
+	}
+	raw := strings.TrimRight(string(out), "\n")
+	if raw == "" {
+		return nil, fmt.Errorf("command produced no output: %w", domain.ErrInvalidInput)
+	}
+	slog.DebugContext(ctx, "command piped", slog.String(logKeySource, command))
+	return strings.Split(raw, "\n"), nil
+}
+
+func (h *handler) quickIntake(ctx context.Context, in intakeInput) (tool.Result, error) { //nolint:funlen,gocyclo // orchestration method
+	if in.Name == "" {
+		return tool.ErrorResult(fmt.Errorf("name: %w", domain.ErrInvalidInput)), nil
+	}
+	if len(in.Sources) == 0 {
+		return tool.ErrorResult(fmt.Errorf("sources: %w", domain.ErrInvalidInput)), nil
+	}
+
+	hostname, _ := os.Hostname()
+	if hostname == "" {
+		hostname = "unknown"
+	}
+
+	domID := h.resolveID(ctx, hostname)
+	if _, err := h.store.GetDomain(ctx, domID); err != nil {
+		d := &domain.Domain{ID: uuid.NewString(), Name: hostname, CreatedAt: time.Now().UTC()}
+		if pErr := h.store.PutDomain(ctx, d); pErr != nil {
+			return tool.ErrorResult(pErr), nil
+		}
+		h.autoAlias(ctx, d.ID, d.Name, "")
+		domID = d.ID
+	}
+
+	envName := "default"
+	envID := h.resolveID(ctx, envName)
+	if _, err := h.store.GetEnvironment(ctx, envID); err != nil {
+		e := &domain.Environment{ID: uuid.NewString(), DomainID: domID, Name: envName, CreatedAt: time.Now().UTC()}
+		if pErr := h.store.PutEnvironment(ctx, e); pErr != nil {
+			return tool.ErrorResult(pErr), nil
+		}
+		h.autoAlias(ctx, e.ID, e.Name, "")
+		envID = e.ID
+	}
+
+	sess := &domain.Session{ID: uuid.NewString(), EnvironmentID: envID, Name: time.Now().UTC().Format("2006-01-02T15:04:05"), StartedAt: time.Now().UTC()}
+	if err := h.store.PutSession(ctx, sess); err != nil {
+		return tool.ErrorResult(err), nil
+	}
+
+	inst := &domain.Instance{ID: uuid.NewString(), SessionID: sess.ID, Name: in.Name, StartedAt: time.Now().UTC()}
+	if err := h.store.PutInstance(ctx, inst); err != nil {
+		return tool.ErrorResult(err), nil
+	}
+	h.autoAlias(ctx, inst.ID, inst.Name, "")
+
+	var totalEvents int
+	for _, src := range in.Sources {
+		sub := intakeInput{
+			InstanceID: inst.ID,
+			Source:     src.Source,
+			Lines:      src.Lines,
+			FilePath:   src.FilePath,
+			Command:    src.Command,
+		}
+		if len(sub.Lines) == 0 && sub.FilePath != "" {
+			lines, err := readFileLines(sub.FilePath)
+			if err != nil {
+				return tool.ErrorResult(err), nil
+			}
+			sub.Lines = lines
+		}
+		if len(sub.Lines) == 0 && sub.Command != "" {
+			lines, err := readCommandLines(ctx, sub.Command)
+			if err != nil {
+				return tool.ErrorResult(err), nil
+			}
+			sub.Lines = lines
+		}
+		if len(sub.Lines) == 0 {
+			continue
+		}
+		res, err := h.addSource(ctx, sub)
+		if err != nil {
+			return tool.ErrorResult(err), nil
+		}
+		if res.IsError {
+			return res, nil
+		}
+		totalEvents += len(sub.Lines)
+	}
+
+	if _, err := h.mergeInstance(ctx, &graphInput{InstanceID: inst.ID}); err != nil {
+		return tool.ErrorResult(err), nil
+	}
+
+	slog.DebugContext(ctx, "quick_intake completed", slog.String(logKeyInstanceID, inst.ID), slog.Int(logKeyCount, totalEvents))
+	return jsonResult(map[string]any{
+		"instance_id": inst.ID,
+		"session_id":  sess.ID,
+		"name":        in.Name,
+		"sources":     len(in.Sources),
+		"events":      totalEvents,
+	})
 }
 
 func hashLine(source, line string) string {

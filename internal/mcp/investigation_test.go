@@ -480,3 +480,46 @@ func TestAliasResolution(t *testing.T) {
 		}
 	})
 }
+
+func TestQuickIntake(t *testing.T) {
+	s := store.NewMemStore()
+	h := &handler{store: s}
+
+	tmpFile := filepath.Join(t.TempDir(), "quick.log")
+	os.WriteFile(tmpFile, []byte("2025-01-01T00:00:01Z line one\n2025-01-01T00:00:02Z line two\n"), 0o644)
+
+	res := call(t, h.handleIntake, map[string]any{
+		"action": "quick_intake",
+		"name":   "quick-test",
+		"sources": []map[string]any{
+			{"source": "testlog", "file_path": tmpFile},
+		},
+	})
+	text := resultText(t, res)
+	if !strings.Contains(text, "instance_id") {
+		t.Fatalf("expected instance_id in result, got %s", text)
+	}
+	if !strings.Contains(text, `"events": 2`) {
+		t.Fatalf("expected 2 events, got %s", text)
+	}
+
+	// Verify we can query by the alias
+	call(t, h.handleQuery, map[string]any{
+		"action": "timeline", "instance_id": "quick-test", "limit": 10,
+	})
+}
+
+func TestCommandPiping(t *testing.T) {
+	s := store.NewMemStore()
+	h := &handler{store: s}
+	instID := setupInstance(t, h)
+
+	res := call(t, h.handleIntake, map[string]any{
+		"action": "add_source", "instance_id": instID, "source": "echo-test",
+		"command": "echo '2025-01-01T00:00:01Z piped line one' && echo '2025-01-01T00:00:02Z piped line two'",
+	})
+	text := resultText(t, res)
+	if !strings.Contains(text, `"added": 2`) {
+		t.Fatalf("expected 2 lines from command, got %s", text)
+	}
+}
