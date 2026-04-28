@@ -348,3 +348,24 @@ func (h *handler) collectSessionEvents(ctx context.Context, sessionID string) ([
 	}
 	return all, nil
 }
+
+func (h *handler) summarize(ctx context.Context, in queryInput) (tool.Result, error) {
+	if in.InstanceID == "" {
+		return tool.ErrorResult(fmt.Errorf("instance_id: %w", domain.ErrInstanceRequired)), nil
+	}
+	events, err := h.store.ListEvents(ctx, in.InstanceID, port.EventFilter{Limit: 100000})
+	if err != nil {
+		return tool.ErrorResult(err), nil
+	}
+	templates := extractTemplates(events)
+	sort.Slice(templates, func(i, j int) bool { return templates[i].FirstSeen.Before(templates[j].FirstSeen) })
+	limit := in.Limit
+	if limit <= 0 || limit > len(templates) {
+		limit = len(templates)
+	}
+	if limit > 20 {
+		limit = 20
+	}
+	slog.DebugContext(ctx, "summarize completed", slog.Int(logKeyCount, limit))
+	return jsonResult(templates[:limit])
+}

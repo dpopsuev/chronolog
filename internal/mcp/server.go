@@ -83,7 +83,7 @@ var graphSchema = json.RawMessage(`{
 var querySchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
-		"action": {"type": "string", "enum": ["timeline", "search", "around", "correlations", "trace_to_code", "trace_from_code", "search_by_label", "search_by_bookmark", "suspects", "time_of_defect", "recurrence"], "description": "Query action"},
+		"action": {"type": "string", "enum": ["timeline", "search", "around", "correlations", "trace_to_code", "trace_from_code", "search_by_label", "search_by_bookmark", "suspects", "time_of_defect", "recurrence", "summarize"], "description": "Query action"},
 		"instance_id": {"type": "string", "description": "Instance UUID (for timeline/scoped queries)"},
 		"session_id": {"type": "string", "description": "Session UUID (for scoped queries)"},
 		"environment_id": {"type": "string", "description": "Environment UUID (for recurrence)"},
@@ -1131,9 +1131,31 @@ func (h *handler) handleQuery(ctx context.Context, raw json.RawMessage) (tool.Re
 		}
 		return jsonResult(events)
 	case "search":
-		events, err := h.store.SearchEvents(ctx, in.Query, limit)
+		events, err := h.store.SearchEvents(ctx, in.Query, limit*2)
 		if err != nil {
 			return tool.ErrorResult(err), nil
+		}
+		if in.InstanceID != "" || in.SessionID != "" {
+			var filtered []*domain.Event
+			scope := make(map[string]bool)
+			if in.InstanceID != "" {
+				scope[in.InstanceID] = true
+			}
+			if in.SessionID != "" {
+				insts, _ := h.store.ListInstances(ctx, in.SessionID)
+				for _, inst := range insts {
+					scope[inst.ID] = true
+				}
+			}
+			for _, e := range events {
+				if scope[e.InstanceID] {
+					filtered = append(filtered, e)
+				}
+			}
+			events = filtered
+		}
+		if limit > 0 && len(events) > limit {
+			events = events[:limit]
 		}
 		return jsonResult(events)
 	case "around":
@@ -1144,6 +1166,8 @@ func (h *handler) handleQuery(ctx context.Context, raw json.RawMessage) (tool.Re
 		return h.traceCode(ctx, in, port.Outgoing)
 	case "trace_from_code":
 		return h.traceCode(ctx, in, port.Incoming)
+	case "summarize":
+		return h.summarize(ctx, in)
 	case "search_by_label":
 		return h.searchByLabel(ctx, in)
 	case "search_by_bookmark":

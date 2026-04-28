@@ -509,6 +509,40 @@ func TestQuickIntake(t *testing.T) {
 	})
 }
 
+func TestScopedSearch(t *testing.T) {
+	s := store.NewMemStore()
+	h := &handler{store: s}
+	instID := setupInstance(t, h)
+
+	// Ingest two sources with overlapping keyword "error"
+	call(t, h.handleIntake, map[string]any{
+		"action": "add_source", "instance_id": instID, "source": "kernel",
+		"lines": []string{"2025-01-01T00:00:01Z ACPI error boot", "2025-01-01T00:00:02Z ACPI error reserved"},
+	})
+	call(t, h.handleIntake, map[string]any{
+		"action": "add_source", "instance_id": instID, "source": "syslog",
+		"lines": []string{"2025-01-01T00:00:03Z real error happened"},
+	})
+
+	// Unscoped search returns all 3
+	res := call(t, h.handleQuery, map[string]any{
+		"action": "search", "query": "error", "limit": 10,
+	})
+	all := extractArray(t, res)
+	if len(all) != 3 {
+		t.Fatalf("unscoped search: expected 3, got %d", len(all))
+	}
+
+	// Scoped by instance_id — still all 3 (same instance)
+	res = call(t, h.handleQuery, map[string]any{
+		"action": "search", "query": "error", "instance_id": instID, "limit": 10,
+	})
+	scoped := extractArray(t, res)
+	if len(scoped) != 3 {
+		t.Fatalf("instance-scoped: expected 3, got %d", len(scoped))
+	}
+}
+
 func TestCommandPiping(t *testing.T) {
 	s := store.NewMemStore()
 	h := &handler{store: s}
