@@ -1,16 +1,20 @@
 package cli
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
-	mcpserver "github.com/dpopsuev/chronolog/internal/mcp"
-
+	batterymcp "github.com/dpopsuev/battery/mcp"
 	"github.com/dpopsuev/chronolog/internal/config"
+	mcpserver "github.com/dpopsuev/chronolog/internal/mcp"
 	"github.com/dpopsuev/chronolog/internal/store"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/spf13/cobra"
@@ -53,7 +57,8 @@ func versionCmd() *cobra.Command {
 }
 
 func serveCmd() *cobra.Command {
-	return &cobra.Command{
+	var transport, addr string
+	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Start the Chronolog MCP server",
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -75,14 +80,54 @@ func serveCmd() *cobra.Command {
 			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGTERM, syscall.SIGINT)
 			defer stop()
 
+			if transport == "" {
+				transport = cfg.Transport
+			}
+
 			slog.InfoContext(ctx, "starting chronolog MCP server",
-				slog.String(logKeyTransport, cfg.Transport),
+				slog.String(logKeyTransport, transport),
 				slog.String(logKeyDB, cfg.DB.Path),
 			)
 
+			if transport == "http" {
+				return serveHTTP(ctx, srv, addr)
+			}
 			return srv.Serve(ctx, &sdkmcp.StdioTransport{})
 		},
 	}
+	cmd.Flags().StringVar(&transport, "transport", "", "transport: stdio (default) or http")
+	cmd.Flags().StringVar(&addr, "addr", ":8080", "HTTP listen address (only with --transport=http)")
+	return cmd
+}
+
+func serveHTTP(ctx context.Context, srv *batterymcp.Server, addr string) error {
+	sdkSrv := srv.SDK()
+	handler := sdkmcp.NewStreamableHTTPHandler(func(_ *http.Request) *sdkmcp.Server {
+		return sdkSrv
+	}, &sdkmcp.StreamableHTTPOptions{
+		Logger: slog.Default(),
+	})
+
+	mux := http.NewServeMux()
+	mux.Handle("/mcp", handler)
+	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintln(w, `{"status":"ok"}`)
+	})
+
+	httpSrv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 30 * time.Second} //nolint:mnd // standard timeout
+
+	go func() {
+		<-ctx.Done()
+		httpSrv.Close()
+	}()
+
+	slog.InfoContext(ctx, "HTTP server listening", slog.String(logKeyTransport, addr))
+	err := httpSrv.ListenAndServe()
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
 }
 
 func initLogger() {

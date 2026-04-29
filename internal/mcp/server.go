@@ -1109,7 +1109,7 @@ type queryInput struct {
 	Window        int    `json:"window,omitempty"`
 }
 
-func (h *handler) handleQuery(ctx context.Context, raw json.RawMessage) (tool.Result, error) {
+func (h *handler) handleQuery(ctx context.Context, raw json.RawMessage) (tool.Result, error) { //nolint:gocyclo // action dispatch switch
 	var in queryInput
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return tool.ErrorResult(err), nil
