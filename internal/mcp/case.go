@@ -106,6 +106,7 @@ func (h *handler) openCase(ctx context.Context, in caseInput) (tool.Result, erro
 	if err := h.store.PutCase(ctx, c); err != nil {
 		return tool.ErrorResult(err), nil
 	}
+	h.rememberCase(c)
 	h.autoAlias(ctx, c.ID, c.Title, "")
 	slog.DebugContext(ctx, "case opened", slog.String(logKeyCaseID, c.ID))
 	return jsonResult(c)
@@ -115,14 +116,15 @@ func (h *handler) closeCase(ctx context.Context, in caseInput) (tool.Result, err
 	if in.CaseID == "" {
 		return tool.ErrorResult(fmt.Errorf("case_id: %w", domain.ErrInvalidInput)), nil
 	}
-	c, err := h.store.GetCase(ctx, in.CaseID)
+	now := time.Now().UTC()
+	c, err := h.stageCaseMutation(ctx, in.CaseID, func(c *domain.Case) {
+		c.Status = "closed"
+		c.ClosedAt = &now
+	}, "status", "closed_at")
 	if err != nil {
 		return tool.ErrorResult(err), nil
 	}
-	now := time.Now().UTC()
-	c.Status = "closed"
-	c.ClosedAt = &now
-	if err := h.store.PutCase(ctx, c); err != nil {
+	if err := h.flushCaseView(ctx, in.CaseID); err != nil {
 		return tool.ErrorResult(err), nil
 	}
 	slog.DebugContext(ctx, "case closed", slog.String(logKeyCaseID, c.ID))
@@ -133,7 +135,7 @@ func (h *handler) getCase(ctx context.Context, in caseInput) (tool.Result, error
 	if in.CaseID == "" {
 		return tool.ErrorResult(fmt.Errorf("case_id: %w", domain.ErrInvalidInput)), nil
 	}
-	c, err := h.store.GetCase(ctx, in.CaseID)
+	view, err := h.getOrMaterializeCaseView(ctx, in.CaseID)
 	if err != nil {
 		return tool.ErrorResult(err), nil
 	}
@@ -141,7 +143,7 @@ func (h *handler) getCase(ctx context.Context, in caseInput) (tool.Result, error
 	rootCause, _ := h.store.GetRootCause(ctx, in.CaseID)
 	transcript, _ := h.store.ListTranscriptEntries(ctx, in.CaseID)
 	return jsonResult(map[string]any{
-		"case":       c,
+		"case":       cloneCase(view.local),
 		"symptoms":   symptoms,
 		"root_cause": rootCause,
 		"transcript": transcript,

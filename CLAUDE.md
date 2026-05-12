@@ -9,14 +9,14 @@ Hexagonal architecture:
 - `internal/port/` — store interfaces (7 ISP interfaces composed into Store)
 - `internal/store/` — adapters: SQLiteStore (prod), MemStore (testkit)
 - `internal/parser/` — timestamp detection and parsing
-- `internal/mcp/` — MCP server with 6 tools
+- `internal/mcp/` — MCP server with 7 tools
 - `internal/config/` — YAML config resolution
 - `internal/cli/` — Cobra CLI (serve, version)
 - `cmd/chronolog/` — entry point
 
 ## MCP Tools
 
-6 tools: `chronolog` (cascade lifecycle), `intake` (receiving dock), `graph` (stage+merge), `query` (timeline+FTS5+trace), `diff` (hot-cold), `projection` (tensor).
+7 tools: `chronolog` (cascade lifecycle), `intake` (receiving dock), `graph` (stage+merge), `query` (timeline+FTS5+trace), `diff` (hot-cold), `projection` (tensor), `case` (investigation lifecycle).
 
 ## Cascade Hierarchy
 

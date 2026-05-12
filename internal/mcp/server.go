@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -11,7 +12,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	batterymcp "github.com/dpopsuev/battery/mcp"
@@ -94,7 +97,9 @@ var querySchema = json.RawMessage(`{
 		"pattern": {"type": "string", "description": "Log pattern to match (for time_of_defect/recurrence)"},
 		"label": {"type": "string", "description": "Bookmark label filter (for search_by_bookmark)"},
 		"limit": {"type": "integer", "description": "Max results (default 100)"},
-		"window": {"type": "integer", "description": "Correlation window in seconds (default 5)"}
+		"window": {"type": "integer", "description": "Correlation window in seconds (default 5)"},
+		"cursor": {"type": "string", "description": "Opaque pagination cursor returned by previous list query"},
+		"response_format": {"type": "string", "enum": ["detailed", "concise"], "description": "Output verbosity. detailed returns full objects; concise returns compact summaries"}
 	},
 	"required": ["action"]
 }`)
@@ -142,6 +147,14 @@ const (
 	logKeyCodebaseID = "codebase_id"
 )
 
+const (
+	queryDefaultLimit = 100
+	queryMaxLimit     = 500
+
+	responseFormatDetailed = "detailed"
+	responseFormatConcise  = "concise"
+)
+
 const instructions = "Chronolog consolidates multiple log sources into a single clean " +
 	"traversable timeline with code traceability. Many logs in, one clean signal out. " +
 	"Six-level cascade hierarchy: Domain → Environment → Session → Instance → Phase → Event. " +
@@ -153,6 +166,7 @@ const instructions = "Chronolog consolidates multiple log sources into a single 
 	"Workflow: chronolog create_domain → create_environment → create_session → create_instance, " +
 	"then intake add_source to stage log lines, graph merge to create edges, " +
 	"then query timeline/search/around/correlations to read events. " +
+	"List-style query actions support cursor pagination and response_format (detailed|concise). " +
 	"All IDs are UUIDs. Named aliases are mutable. " +
 	"One log line = one event. Unstructured lines stored with time_confidence: unknown, not dropped. " +
 	"Idempotent intake: re-adding same source produces no duplicates. " +
@@ -175,7 +189,11 @@ func NewServer(s port.Store, version string) *batterymcp.Server {
 	bsrv := batterymcp.NewServer("chronolog", version).
 		WithInstructions(instructions)
 
-	h := &handler{store: s, git: execGitRunner{}}
+	h := &handler{
+		store:     s,
+		git:       execGitRunner{},
+		caseViews: make(map[string]*caseView),
+	}
 
 	bsrv.Tool(server.ToolMeta{
 		Name: "chronolog",
@@ -228,7 +246,8 @@ func NewServer(s port.Store, version string) *batterymcp.Server {
 			"around (event_id, limit — context events around a target), " +
 			"correlations (event_id, window — events from other sources within time window), " +
 			"trace_to_code (event_id — outgoing traces_to edges), " +
-			"trace_from_code (event_id — incoming traces_to edges).",
+			"trace_from_code (event_id — incoming traces_to edges). " +
+			"Optional cursor pagination via cursor/next_cursor and verbosity control via response_format (detailed|concise).",
 		Keywords:    []string{"timeline", "search", "trace", "query", "events", "fts", "around", "correlations"},
 		Categories:  []string{"query"},
 		InputSchema: querySchema,
@@ -275,8 +294,10 @@ func NewServer(s port.Store, version string) *batterymcp.Server {
 }
 
 type handler struct {
-	store port.Store
-	git   GitRunner
+	store      port.Store
+	git        GitRunner
+	caseViewMu sync.Mutex
+	caseViews  map[string]*caseView
 }
 
 func (h *handler) resolveID(ctx context.Context, id string) string {
@@ -1095,18 +1116,20 @@ func (h *handler) purgeInstance(ctx context.Context, in *graphInput) (tool.Resul
 // --- query tool ---
 
 type queryInput struct {
-	Action        string `json:"action"`
-	InstanceID    string `json:"instance_id,omitempty"`
-	SessionID     string `json:"session_id,omitempty"`
-	EnvironmentID string `json:"environment_id,omitempty"`
-	EventID       string `json:"event_id,omitempty"`
-	Query         string `json:"query,omitempty"`
-	Key           string `json:"key,omitempty"`
-	Value         string `json:"value,omitempty"`
-	Pattern       string `json:"pattern,omitempty"`
-	Label         string `json:"label,omitempty"`
-	Limit         int    `json:"limit,omitempty"`
-	Window        int    `json:"window,omitempty"`
+	Action         string `json:"action"`
+	InstanceID     string `json:"instance_id,omitempty"`
+	SessionID      string `json:"session_id,omitempty"`
+	EnvironmentID  string `json:"environment_id,omitempty"`
+	EventID        string `json:"event_id,omitempty"`
+	Query          string `json:"query,omitempty"`
+	Key            string `json:"key,omitempty"`
+	Value          string `json:"value,omitempty"`
+	Pattern        string `json:"pattern,omitempty"`
+	Label          string `json:"label,omitempty"`
+	Limit          int    `json:"limit,omitempty"`
+	Window         int    `json:"window,omitempty"`
+	Cursor         string `json:"cursor,omitempty"`
+	ResponseFormat string `json:"response_format,omitempty"`
 }
 
 func (h *handler) handleQuery(ctx context.Context, raw json.RawMessage) (tool.Result, error) { //nolint:gocyclo // action dispatch switch
@@ -1119,47 +1142,22 @@ func (h *handler) handleQuery(ctx context.Context, raw json.RawMessage) (tool.Re
 	in.SessionID = h.resolveID(ctx, in.SessionID)
 	in.EnvironmentID = h.resolveID(ctx, in.EnvironmentID)
 	in.EventID = h.resolveID(ctx, in.EventID)
-	limit := in.Limit
-	if limit <= 0 {
-		limit = 100
+	limit := clampQueryLimit(in.Limit)
+	offset, err := decodeCursor(in.Cursor)
+	if err != nil {
+		return tool.ErrorResult(fmt.Errorf("cursor: %w", err)), nil
+	}
+	format, err := normalizeResponseFormat(in.ResponseFormat)
+	if err != nil {
+		return tool.ErrorResult(fmt.Errorf("response_format: %w", err)), nil
 	}
 	switch in.Action {
 	case "timeline":
-		events, err := h.store.ListEvents(ctx, in.InstanceID, port.EventFilter{Limit: limit})
-		if err != nil {
-			return tool.ErrorResult(err), nil
-		}
-		return jsonResult(events)
+		return h.queryTimeline(ctx, in, limit, offset, format)
 	case "search":
-		events, err := h.store.SearchEvents(ctx, in.Query, limit*2)
-		if err != nil {
-			return tool.ErrorResult(err), nil
-		}
-		if in.InstanceID != "" || in.SessionID != "" {
-			var filtered []*domain.Event
-			scope := make(map[string]bool)
-			if in.InstanceID != "" {
-				scope[in.InstanceID] = true
-			}
-			if in.SessionID != "" {
-				insts, _ := h.store.ListInstances(ctx, in.SessionID)
-				for _, inst := range insts {
-					scope[inst.ID] = true
-				}
-			}
-			for _, e := range events {
-				if scope[e.InstanceID] {
-					filtered = append(filtered, e)
-				}
-			}
-			events = filtered
-		}
-		if limit > 0 && len(events) > limit {
-			events = events[:limit]
-		}
-		return jsonResult(events)
+		return h.querySearch(ctx, in, limit, offset, format)
 	case "around":
-		return h.queryAround(ctx, in, limit)
+		return h.queryAround(ctx, in, limit, offset, format)
 	case "correlations":
 		return h.queryCorrelations(ctx, in)
 	case "trace_to_code":
@@ -1183,7 +1181,70 @@ func (h *handler) handleQuery(ctx context.Context, raw json.RawMessage) (tool.Re
 	}
 }
 
-func (h *handler) queryAround(ctx context.Context, in queryInput, limit int) (tool.Result, error) {
+func (h *handler) queryTimeline(ctx context.Context, in queryInput, limit, offset int, format string) (tool.Result, error) {
+	if in.InstanceID == "" {
+		return tool.ErrorResult(fmt.Errorf("instance_id: %w", domain.ErrInstanceRequired)), nil
+	}
+	events, err := h.store.ListEvents(ctx, in.InstanceID, port.EventFilter{Limit: limit + 1, Offset: offset})
+	if err != nil {
+		return tool.ErrorResult(err), nil
+	}
+	hasMore := len(events) > limit
+	if hasMore {
+		events = events[:limit]
+	}
+	payload := formatEvents(events, format)
+	if !wantsEnvelope(in) {
+		return jsonResult(payload)
+	}
+	return jsonResult(buildPage(payload, in.Action, format, limit, offset, hasMore))
+}
+
+func (h *handler) querySearch(ctx context.Context, in queryInput, limit, offset int, format string) (tool.Result, error) {
+	searchFetch := (offset + limit + 1) * 2
+	events, err := h.store.SearchEvents(ctx, in.Query, searchFetch)
+	if err != nil {
+		return tool.ErrorResult(err), nil
+	}
+	if in.InstanceID != "" || in.SessionID != "" {
+		var filtered []*domain.Event
+		scope := make(map[string]bool)
+		if in.InstanceID != "" {
+			scope[in.InstanceID] = true
+		}
+		if in.SessionID != "" {
+			insts, _ := h.store.ListInstances(ctx, in.SessionID)
+			for _, inst := range insts {
+				scope[inst.ID] = true
+			}
+		}
+		for _, e := range events {
+			if scope[e.InstanceID] {
+				filtered = append(filtered, e)
+			}
+		}
+		events = filtered
+	}
+	start := offset
+	if start > len(events) {
+		start = len(events)
+	}
+	end := start + limit
+	if end > len(events) {
+		end = len(events)
+	}
+	page := events[start:end]
+	hasMore := end < len(events)
+	payload := formatEvents(page, format)
+	if !wantsEnvelope(in) {
+		return jsonResult(payload)
+	}
+	result := buildPage(payload, in.Action, format, limit, offset, hasMore)
+	result["total_matches"] = len(events)
+	return jsonResult(result)
+}
+
+func (h *handler) queryAround(ctx context.Context, in queryInput, limit, offset int, format string) (tool.Result, error) {
 	if in.EventID == "" {
 		return tool.ErrorResult(fmt.Errorf("event_id: %w", domain.ErrInvalidInput)), nil
 	}
@@ -1217,7 +1278,24 @@ func (h *handler) queryAround(ctx context.Context, in queryInput, limit int) (to
 	if end > len(events) {
 		end = len(events)
 	}
-	return jsonResult(events[start:end])
+	windowEvents := events[start:end]
+	if !wantsEnvelope(in) {
+		return jsonResult(formatEvents(windowEvents, format))
+	}
+	pageStart := offset
+	if pageStart > len(windowEvents) {
+		pageStart = len(windowEvents)
+	}
+	pageEnd := pageStart + limit
+	if pageEnd > len(windowEvents) {
+		pageEnd = len(windowEvents)
+	}
+	page := windowEvents[pageStart:pageEnd]
+	hasMore := pageEnd < len(windowEvents)
+	payload := formatEvents(page, format)
+	result := buildPage(payload, in.Action, format, limit, offset, hasMore)
+	result["window_total"] = len(windowEvents)
+	return jsonResult(result)
 }
 
 func (h *handler) queryCorrelations(ctx context.Context, in queryInput) (tool.Result, error) {
@@ -1622,6 +1700,114 @@ func filterCount(events []*domain.Event, filter string) int {
 }
 
 // --- helpers ---
+
+type eventSummary struct {
+	ID             string            `json:"id"`
+	InstanceID     string            `json:"instance_id"`
+	Timestamp      time.Time         `json:"timestamp"`
+	TimeConfidence string            `json:"time_confidence"`
+	Message        string            `json:"message"`
+	Source         string            `json:"source"`
+	Labels         map[string]string `json:"labels,omitempty"`
+}
+
+func clampQueryLimit(limit int) int {
+	if limit <= 0 {
+		return queryDefaultLimit
+	}
+	if limit > queryMaxLimit {
+		return queryMaxLimit
+	}
+	return limit
+}
+
+func normalizeResponseFormat(format string) (string, error) {
+	if format == "" {
+		return responseFormatDetailed, nil
+	}
+	switch strings.ToLower(format) {
+	case responseFormatDetailed:
+		return responseFormatDetailed, nil
+	case responseFormatConcise:
+		return responseFormatConcise, nil
+	default:
+		return "", fmt.Errorf("unsupported value %q: %w", format, domain.ErrInvalidInput)
+	}
+}
+
+func wantsEnvelope(in queryInput) bool {
+	return in.Cursor != "" || in.ResponseFormat != ""
+}
+
+func formatEvents(events []*domain.Event, format string) any {
+	if format != responseFormatConcise {
+		return events
+	}
+	out := make([]eventSummary, 0, len(events))
+	for _, e := range events {
+		out = append(out, eventSummary{
+			ID:             e.ID,
+			InstanceID:     e.InstanceID,
+			Timestamp:      e.Timestamp,
+			TimeConfidence: e.TimeConfidence,
+			Message:        e.Message,
+			Source:         e.Source,
+			Labels:         e.Labels,
+		})
+	}
+	return out
+}
+
+func buildPage(items any, action, format string, limit, offset int, hasMore bool) map[string]any {
+	page := map[string]any{
+		"action":          action,
+		"response_format": format,
+		"limit":           limit,
+		"cursor":          encodeCursor(offset),
+		"count":           sliceLen(items),
+		"items":           items,
+		"truncated":       hasMore,
+	}
+	if hasMore {
+		next := encodeCursor(offset + sliceLen(items))
+		page["next_cursor"] = next
+		page["hint"] = "Pass next_cursor as cursor to continue pagination."
+	}
+	return page
+}
+
+func sliceLen(items any) int {
+	switch v := items.(type) {
+	case []*domain.Event:
+		return len(v)
+	case []eventSummary:
+		return len(v)
+	default:
+		return 0
+	}
+}
+
+func decodeCursor(cursor string) (int, error) {
+	if cursor == "" {
+		return 0, nil
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(cursor)
+	if err != nil {
+		return 0, domain.ErrInvalidInput
+	}
+	offset, err := strconv.Atoi(string(raw))
+	if err != nil || offset < 0 {
+		return 0, domain.ErrInvalidInput
+	}
+	return offset, nil
+}
+
+func encodeCursor(offset int) string {
+	if offset < 0 {
+		offset = 0
+	}
+	return base64.RawURLEncoding.EncodeToString([]byte(strconv.Itoa(offset)))
+}
 
 func jsonResult(data any) (tool.Result, error) {
 	b, err := json.MarshalIndent(data, "", "  ")

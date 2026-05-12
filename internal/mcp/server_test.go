@@ -96,6 +96,30 @@ func TestAddBookmark(t *testing.T) {
 	_ = instID
 }
 
+func TestCaseCloseConflictOnStaleLocalView(t *testing.T) {
+	s := store.NewMemStore()
+	h := &handler{store: s}
+	openRes := call(t, h.handleCase, map[string]any{
+		"action": "open_case",
+		"title":  "stale-case",
+	})
+	caseID := extractID(t, openRes)
+
+	c, err := s.GetCase(context.Background(), caseID)
+	if err != nil {
+		t.Fatalf("GetCase: %v", err)
+	}
+	c.Title = "remote-change"
+	if err := s.PutCase(context.Background(), c); err != nil {
+		t.Fatalf("PutCase: %v", err)
+	}
+
+	callExpectError(t, h.handleCase, map[string]any{
+		"action":  "close_case",
+		"case_id": caseID,
+	})
+}
+
 func TestAddHighlight(t *testing.T) {
 	h, _, eventIDs := setupWithEvents(t, 1)
 	call(t, h.handleGraph, map[string]any{
@@ -210,6 +234,86 @@ func TestAround(t *testing.T) {
 	// radius = 6/2 = 3, so should return events[2..8] = 7 events
 	if len(arr) != 7 {
 		t.Fatalf("around len = %d, want 7", len(arr))
+	}
+}
+
+func TestTimelineConcisePagination(t *testing.T) {
+	h, instID, _ := setupWithEvents(t, 5)
+	first := call(t, h.handleQuery, map[string]any{
+		"action":          "timeline",
+		"instance_id":     instID,
+		"limit":           2,
+		"response_format": "concise",
+	})
+	var page1 map[string]any
+	if err := json.Unmarshal([]byte(resultText(t, first)), &page1); err != nil {
+		t.Fatalf("unmarshal page1: %v", err)
+	}
+	if page1["truncated"] != true {
+		t.Fatalf("expected truncated=true, got %v", page1["truncated"])
+	}
+	if page1["response_format"] != "concise" {
+		t.Fatalf("response_format = %v, want concise", page1["response_format"])
+	}
+	items1 := page1["items"].([]any)
+	if len(items1) != 2 {
+		t.Fatalf("page1 items = %d, want 2", len(items1))
+	}
+	if _, ok := items1[0].(map[string]any)["raw_line"]; ok {
+		t.Fatal("concise format should not include raw_line")
+	}
+	next, ok := page1["next_cursor"].(string)
+	if !ok || next == "" {
+		t.Fatal("expected non-empty next_cursor")
+	}
+
+	second := call(t, h.handleQuery, map[string]any{
+		"action":          "timeline",
+		"instance_id":     instID,
+		"limit":           2,
+		"cursor":          next,
+		"response_format": "concise",
+	})
+	var page2 map[string]any
+	if err := json.Unmarshal([]byte(resultText(t, second)), &page2); err != nil {
+		t.Fatalf("unmarshal page2: %v", err)
+	}
+	items2 := page2["items"].([]any)
+	if len(items2) != 2 {
+		t.Fatalf("page2 items = %d, want 2", len(items2))
+	}
+}
+
+func TestTimelineInvalidCursor(t *testing.T) {
+	h, instID, _ := setupWithEvents(t, 3)
+	callExpectError(t, h.handleQuery, map[string]any{
+		"action":      "timeline",
+		"instance_id": instID,
+		"cursor":      "%%%not-base64%%%",
+	})
+}
+
+func TestSearchConcisePagination(t *testing.T) {
+	h, instID, _ := setupWithEvents(t, 5)
+	res := call(t, h.handleQuery, map[string]any{
+		"action":          "search",
+		"query":           "msg-",
+		"instance_id":     instID,
+		"limit":           2,
+		"response_format": "concise",
+	})
+	var page map[string]any
+	if err := json.Unmarshal([]byte(resultText(t, res)), &page); err != nil {
+		t.Fatalf("unmarshal page: %v", err)
+	}
+	if int(page["count"].(float64)) != 2 {
+		t.Fatalf("count = %v, want 2", page["count"])
+	}
+	if int(page["total_matches"].(float64)) < 2 {
+		t.Fatalf("total_matches = %v, want >=2", page["total_matches"])
+	}
+	if _, ok := page["next_cursor"]; !ok {
+		t.Fatal("expected next_cursor for paginated search")
 	}
 }
 

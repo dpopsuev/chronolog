@@ -11,6 +11,7 @@ var (
 	ErrUnknownAction         = errors.New("unknown action")
 	ErrDuplicateAlias        = errors.New("duplicate alias")
 	ErrInvalidInput          = errors.New("invalid input")
+	ErrConflict              = errors.New("conflict")
 	ErrSchemaVersionMismatch = errors.New("schema version mismatch")
 	ErrSourceNotFound        = errors.New("source not found")
 	ErrInstanceRequired      = errors.New("instance_id is required")
