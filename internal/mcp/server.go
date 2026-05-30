@@ -52,6 +52,7 @@ var intakeSchema = json.RawMessage(`{
 		"source": {"type": "string", "description": "Source label (e.g. filename or service name)"},
 		"lines": {"type": "array", "items": {"type": "string"}, "description": "Log lines to ingest. Caller must read the file and split into lines — intake does not read files."},
 		"file_path": {"type": "string", "description": "Path to log file on disk. Alternative to lines[] — Chronolog reads and splits the file."},
+		"command": {"type": "string", "description": "Shell command whose stdout is ingested line by line. Alternative to lines[] and file_path — Chronolog runs the command via sh -c."},
 		"collector": {"type": "string", "description": "Who/what collected this source (optional provenance)"},
 		"file_hash": {"type": "string", "description": "SHA256 hash of the original file (optional provenance)"}
 	},
@@ -182,7 +183,7 @@ const instructions = "Chronolog consolidates multiple log sources into a single 
 	"Case tool for investigation lifecycle: open_case, add_symptom, set_root_cause, " +
 	"append_transcript (replayable), close_case. " +
 	"Label conventions: category=symptom, category=suspect, category=smoking_gun, category=red_herring. " +
-	"Intake supports file_path (read from disk) and test_maquette (dry-run parser validation)."
+	"Intake supports lines[] (caller-provided), file_path (read from disk), command (sh -c stdout), and test_maquette (dry-run parser validation)."
 
 // NewServer creates the Chronolog MCP server with all 7 tools registered.
 func NewServer(s port.Store, version string) *batterymcp.Server {
@@ -211,7 +212,7 @@ func NewServer(s port.Store, version string) *batterymcp.Server {
 	bsrv.Tool(server.ToolMeta{
 		Name: "intake",
 		Description: "Log source staging — the receiving dock. Add log lines to an instance for later processing. " +
-			"Actions: add_source (instance_id, source, lines[] — stages lines, parses RFC3339 timestamps, " +
+			"Actions: add_source (instance_id, source, lines[]|file_path|command — stages lines, parses RFC3339 timestamps, " +
 			"stores as events with source attribution; unrecognized timestamps get time_confidence: unknown), " +
 			"list_sources (instance_id — shows source files and event counts), " +
 			"remove_source (instance_id, source — removes all events from a source and retracts edges). " +

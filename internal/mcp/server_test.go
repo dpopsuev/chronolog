@@ -209,6 +209,24 @@ func TestRemoveSource(t *testing.T) {
 	}
 }
 
+func TestAddSource_Command(t *testing.T) {
+	h, instID, _ := setupWithEvents(t, 0)
+	call(t, h.handleIntake, map[string]any{
+		"action":      "add_source",
+		"instance_id": instID,
+		"source":      "echo",
+		"command":     "printf '2025-01-01T00:00:01Z line-one\n2025-01-01T00:00:02Z line-two'",
+	})
+	tlRes := call(t, h.handleQuery, map[string]any{
+		"action":      "timeline",
+		"instance_id": instID,
+	})
+	events := extractArray(t, tlRes)
+	if len(events) != 2 {
+		t.Fatalf("timeline events = %d, want 2", len(events))
+	}
+}
+
 func TestRemoveSource_InvalidInput(t *testing.T) {
 	s := store.NewMemStore()
 	h := &handler{store: s}
