@@ -28,6 +28,101 @@ type caseInput struct {
 	ResultHash  string `json:"result_hash,omitempty"`
 }
 
+var caseOutputSchema = json.RawMessage(`{
+	"$defs": {
+		"case": {
+			"type": "object",
+			"properties": {
+				"id":         {"type": "string"},
+				"title":      {"type": "string"},
+				"status":     {"type": "string", "enum": ["open", "closed"]},
+				"created_at": {"type": "string", "format": "date-time"},
+				"closed_at":  {"type": "string", "format": "date-time"}
+			},
+			"required": ["id", "title", "status", "created_at"]
+		},
+		"symptom": {
+			"type": "object",
+			"properties": {
+				"id":          {"type": "string"},
+				"case_id":     {"type": "string"},
+				"description": {"type": "string"},
+				"event_id":    {"type": "string"},
+				"created_at":  {"type": "string", "format": "date-time"}
+			},
+			"required": ["id", "case_id", "description", "created_at"]
+		},
+		"root_cause": {
+			"type": "object",
+			"properties": {
+				"id":          {"type": "string"},
+				"case_id":     {"type": "string"},
+				"description": {"type": "string"},
+				"event_id":    {"type": "string"},
+				"created_at":  {"type": "string", "format": "date-time"}
+			},
+			"required": ["id", "case_id", "description", "created_at"]
+		},
+		"transcript_entry": {
+			"type": "object",
+			"properties": {
+				"id":          {"type": "string"},
+				"case_id":     {"type": "string"},
+				"seq":         {"type": "integer"},
+				"content":     {"type": "string"},
+				"tool":        {"type": "string"},
+				"action":      {"type": "string"},
+				"params":      {"type": "string"},
+				"result_hash": {"type": "string"},
+				"created_at":  {"type": "string", "format": "date-time"}
+			},
+			"required": ["id", "case_id", "seq", "content", "created_at"]
+		}
+	},
+	"oneOf": [
+		{"$ref": "#/$defs/case"},
+		{"type": "array", "items": {"$ref": "#/$defs/case"}},
+		{"$ref": "#/$defs/symptom"},
+		{"type": "array", "items": {"$ref": "#/$defs/symptom"}},
+		{"$ref": "#/$defs/root_cause"},
+		{"$ref": "#/$defs/transcript_entry"},
+		{"type": "array", "items": {"$ref": "#/$defs/transcript_entry"}},
+		{
+			"type": "object",
+			"properties": {
+				"case":       {"$ref": "#/$defs/case"},
+				"symptoms":   {"type": "array", "items": {"$ref": "#/$defs/symptom"}},
+				"root_cause": {"oneOf": [{"$ref": "#/$defs/root_cause"}, {"type": "null"}]},
+				"transcript": {"type": "array", "items": {"$ref": "#/$defs/transcript_entry"}}
+			},
+			"required": ["case", "symptoms", "transcript"]
+		},
+		{
+			"type": "object",
+			"properties": {
+				"reproducible": {"type": "boolean"},
+				"entries":      {"type": "integer"},
+				"results": {
+					"type": "array",
+					"items": {
+						"type": "object",
+						"properties": {
+							"seq":         {"type": "integer"},
+							"tool":        {"type": "string"},
+							"action":      {"type": "string"},
+							"match":       {"type": "boolean"},
+							"stored_hash": {"type": "string"},
+							"replay_hash": {"type": "string"}
+						},
+						"required": ["seq", "tool", "action", "match", "stored_hash"]
+					}
+				}
+			},
+			"required": ["reproducible", "entries", "results"]
+		}
+	]
+}`)
+
 var caseSchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {

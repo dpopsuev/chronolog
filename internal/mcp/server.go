@@ -286,9 +286,10 @@ func NewServer(s port.Store, version string) *batterymcp.Server {
 			"add_symptom (case_id, description, event_id), list_symptoms (case_id), " +
 			"set_root_cause (case_id, description, event_id — link to smoking gun), get_root_cause (case_id), " +
 			"append_transcript (case_id, content), get_transcript (case_id).",
-		Keywords:    []string{"case", "investigation", "symptom", "root_cause", "transcript", "rca"},
-		Categories:  []string{"investigation"},
-		InputSchema: caseSchema,
+		Keywords:     []string{"case", "investigation", "symptom", "root_cause", "transcript", "rca"},
+		Categories:   []string{"investigation"},
+		InputSchema:  caseSchema,
+		OutputSchema: caseOutputSchema,
 	}, h.handleCase)
 
 	return bsrv
@@ -1815,5 +1816,9 @@ func jsonResult(data any) (tool.Result, error) {
 	if err != nil {
 		return tool.ErrorResult(err), nil
 	}
-	return tool.TextResult(string(b)), nil
+	compact, _ := json.Marshal(data)
+	return tool.Result{
+		Content:           []tool.Content{tool.TextContent{Text: string(b)}},
+		StructuredContent: json.RawMessage(compact),
+	}, nil
 }
