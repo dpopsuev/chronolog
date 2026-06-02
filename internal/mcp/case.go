@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/dpopsuev/battery/tool"
@@ -18,6 +19,8 @@ type caseInput struct {
 	Action      string `json:"action"`
 	CaseID      string `json:"case_id,omitempty"`
 	Title       string `json:"title,omitempty"`
+	Query       string `json:"query,omitempty"`
+	Status      string `json:"status,omitempty"`
 	Description string `json:"description,omitempty"`
 	EventID     string `json:"event_id,omitempty"`
 	Content     string `json:"content,omitempty"`
@@ -129,6 +132,8 @@ var caseSchema = json.RawMessage(`{
 		"action": {"type": "string", "enum": ["open_case", "close_case", "list_cases", "get_case", "add_symptom", "list_symptoms", "set_root_cause", "get_root_cause", "append_transcript", "get_transcript", "replay_transcript"], "description": "Case lifecycle action"},
 		"case_id": {"type": "string", "description": "Case UUID"},
 		"title": {"type": "string", "description": "Case title (for open_case)"},
+		"query": {"type": "string", "description": "Title substring filter for list_cases (case-insensitive)"},
+		"status": {"type": "string", "enum": ["open", "closed"], "description": "Status filter for list_cases"},
 		"description": {"type": "string", "description": "Symptom description or root cause description"},
 		"event_id": {"type": "string", "description": "Evidence event UUID (for add_symptom/set_root_cause)"},
 		"content": {"type": "string", "description": "Transcript entry content"},
@@ -159,6 +164,7 @@ func (h *handler) handleCase(ctx context.Context, raw json.RawMessage) (tool.Res
 		if err != nil {
 			return tool.ErrorResult(err), nil
 		}
+		cs = filterCases(cs, in.Query, in.Status)
 		return jsonResult(cs)
 	case "get_case":
 		return h.getCase(ctx, in)
@@ -344,4 +350,22 @@ func (h *handler) replayTranscript(ctx context.Context, in caseInput) (tool.Resu
 		})
 	}
 	return jsonResult(map[string]any{"reproducible": allMatch, "entries": len(results), "results": results})
+}
+
+func filterCases(cases []*domain.Case, query, status string) []*domain.Case {
+	if query == "" && status == "" {
+		return cases
+	}
+	needle := strings.ToLower(query)
+	result := cases[:0]
+	for _, c := range cases {
+		if needle != "" && !strings.Contains(strings.ToLower(c.Title), needle) {
+			continue
+		}
+		if status != "" && c.Status != status {
+			continue
+		}
+		result = append(result, c)
+	}
+	return result
 }

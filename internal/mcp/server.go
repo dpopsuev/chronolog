@@ -282,14 +282,15 @@ func NewServer(s port.Store, version string) *batterymcp.Server {
 	bsrv.Tool(server.ToolMeta{
 		Name: "case",
 		Description: "Investigation lifecycle — open, track, and close forensic cases. " +
-			"Actions: open_case (title), close_case (case_id), list_cases, get_case (case_id — full case with symptoms/root_cause/transcript), " +
+			"Actions: open_case (title), close_case (case_id), list_cases (query?, status? — filter by title substring and/or open|closed), " +
+			"get_case (case_id — full case with symptoms/root_cause/transcript), " +
 			"add_symptom (case_id, description, event_id), list_symptoms (case_id), " +
 			"set_root_cause (case_id, description, event_id — link to smoking gun), get_root_cause (case_id), " +
 			"append_transcript (case_id, content), get_transcript (case_id).",
 		Keywords:     []string{"case", "investigation", "symptom", "root_cause", "transcript", "rca"},
 		Categories:   []string{"investigation"},
 		InputSchema:  caseSchema,
-		OutputSchema: caseOutputSchema,
+		// OutputSchema: caseOutputSchema, // TODO: go-sdk v1.5.0 requires type:object at root; needs envelope refactor
 	}, h.handleCase)
 
 	return bsrv
